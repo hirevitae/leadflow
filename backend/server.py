@@ -1,89 +1,545 @@
-from fastapi import FastAPI, APIRouter
 from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
-import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
-import uuid
-from datetime import datetime, timezone
-
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
+import os
+import uuid
+import logging
+import bcrypt
+import jwt
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional
+
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, status
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel, Field, EmailStr, ConfigDict
+
+# ---------------- App / DB ----------------
+mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client[os.environ["DB_NAME"]]
 
-# Create the main app without a prefix
-app = FastAPI()
-
-# Create a router with the /api prefix
+app = FastAPI(title="LeadFlow CRM")
 api_router = APIRouter(prefix="/api")
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+JWT_ALGORITHM = "HS256"
+PIPELINE_STAGES = ["new", "contacted", "interested", "demo_scheduled", "negotiation", "enrolled", "lost"]
 
-class StatusCheckCreate(BaseModel):
-    client_name: str
 
-# Add your routes to the router instead of directly to app
+# ---------------- Auth Helpers ----------------
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+
+
+def get_jwt_secret() -> str:
+    return os.environ["JWT_SECRET"]
+
+
+def create_access_token(user_id: str, email: str) -> str:
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "exp": datetime.now(timezone.utc) + timedelta(days=7),
+        "type": "access",
+    }
+    return jwt.encode(payload, get_jwt_secret(), algorithm=JWT_ALGORITHM)
+
+
+async def get_current_user(request: Request) -> dict:
+    token = request.cookies.get("access_token")
+    if not token:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = jwt.decode(token, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "access":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        user = await db.users.find_one({"id": payload["sub"]})
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+        user.pop("password_hash", None)
+        user.pop("_id", None)
+        return user
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
+def set_auth_cookie(response: Response, token: str):
+    response.set_cookie(
+        key="access_token", value=token, httponly=True, secure=False,
+        samesite="lax", max_age=7 * 24 * 3600, path="/",
+    )
+
+
+# ---------------- Models ----------------
+class UserPublic(BaseModel):
+    id: str
+    email: str
+    name: str
+    role: str = "counsellor"
+
+
+class RegisterIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6)
+    name: str
+
+
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class LeadIn(BaseModel):
+    name: str
+    phone: str
+    email: Optional[str] = None
+    course: Optional[str] = None
+    source: Optional[str] = "manual"
+    language: str = "english"
+    notes: Optional[str] = None
+    priority: str = "medium"  # low/medium/high
+
+
+class LeadUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    course: Optional[str] = None
+    source: Optional[str] = None
+    language: Optional[str] = None
+    notes: Optional[str] = None
+    priority: Optional[str] = None
+    stage: Optional[str] = None
+
+
+class StageChange(BaseModel):
+    stage: str
+
+
+class MessageIn(BaseModel):
+    body: str
+    template: Optional[str] = None
+
+
+class CallIn(BaseModel):
+    language: str = "english"  # english/hindi
+    script_id: Optional[str] = None
+
+
+class NoteIn(BaseModel):
+    text: str
+
+
+class TaskIn(BaseModel):
+    title: str
+    due_date: str  # ISO string
+    lead_id: Optional[str] = None
+
+
+class TaskUpdate(BaseModel):
+    done: Optional[bool] = None
+    title: Optional[str] = None
+    due_date: Optional[str] = None
+
+
+# ---------------- Templates / Scripts ----------------
+WHATSAPP_TEMPLATES = [
+    {"id": "intro_en", "lang": "english", "name": "Introduction",
+     "body": "Hi {name}, this is LeadFlow Academy. We saw your interest in {course}. Can we share details?"},
+    {"id": "intro_hi", "lang": "hindi", "name": "परिचय",
+     "body": "नमस्ते {name} जी, मैं LeadFlow Academy से बात कर रहा हूँ। आपने {course} में रुचि दिखाई थी, क्या हम जानकारी भेज सकते हैं?"},
+    {"id": "demo_en", "lang": "english", "name": "Demo Invite",
+     "body": "Hi {name}, would you like to attend a free demo class for {course} this week?"},
+    {"id": "demo_hi", "lang": "hindi", "name": "डेमो आमंत्रण",
+     "body": "नमस्ते {name}, क्या आप इस हफ्ते {course} की मुफ्त डेमो क्लास में भाग लेना चाहेंगे?"},
+    {"id": "followup_en", "lang": "english", "name": "Follow-up",
+     "body": "Hi {name}, just checking in. Do you have any questions about {course}?"},
+    {"id": "followup_hi", "lang": "hindi", "name": "फ़ॉलो-अप",
+     "body": "नमस्ते {name}, क्या {course} के बारे में कोई सवाल है?"},
+]
+
+AI_CALL_SCRIPTS = {
+    "english": "Hello {name}, this is Asha from LeadFlow Academy. I'm calling to follow up on your interest in {course}. Do you have a couple of minutes to discuss?",
+    "hindi": "नमस्ते {name} जी, मैं LeadFlow Academy से आशा बोल रही हूँ। आपकी {course} में रुचि के बारे में बात करनी थी। क्या आपके पास दो मिनट हैं?",
+}
+
+AI_CALL_RESPONSES = [
+    "Customer: Yes, please tell me more.",
+    "AI: Great! Our course runs for 12 weeks with live sessions and projects.",
+    "Customer: What is the fee structure?",
+    "AI: The total fee is INR 25,000 with easy EMI options available.",
+    "Customer: Can I get a demo class first?",
+    "AI: Absolutely. I will share a demo invite on WhatsApp right away.",
+]
+
+
+# ---------------- Auth Endpoints ----------------
+@api_router.post("/auth/register", response_model=UserPublic)
+async def register(payload: RegisterIn, response: Response):
+    email = payload.email.lower()
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(status_code=400, detail="Email already registered")
+    user_id = str(uuid.uuid4())
+    doc = {
+        "id": user_id, "email": email, "name": payload.name,
+        "password_hash": hash_password(payload.password),
+        "role": "counsellor",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.users.insert_one(doc)
+    token = create_access_token(user_id, email)
+    set_auth_cookie(response, token)
+    return UserPublic(id=user_id, email=email, name=payload.name, role="counsellor")
+
+
+@api_router.post("/auth/login")
+async def login(payload: LoginIn, response: Response):
+    email = payload.email.lower()
+    user = await db.users.find_one({"email": email})
+    if not user or not verify_password(payload.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = create_access_token(user["id"], email)
+    set_auth_cookie(response, token)
+    return {"id": user["id"], "email": user["email"], "name": user["name"],
+            "role": user.get("role", "counsellor"), "token": token}
+
+
+@api_router.post("/auth/logout")
+async def logout(response: Response, _user=Depends(get_current_user)):
+    response.delete_cookie("access_token", path="/")
+    return {"ok": True}
+
+
+@api_router.get("/auth/me", response_model=UserPublic)
+async def me(user=Depends(get_current_user)):
+    return UserPublic(**user)
+
+
+# ---------------- Lead Endpoints ----------------
+def _lead_doc_to_out(d: dict) -> dict:
+    d.pop("_id", None)
+    return d
+
+
+@api_router.get("/leads")
+async def list_leads(stage: Optional[str] = None, q: Optional[str] = None,
+                     user=Depends(get_current_user)):
+    query = {}
+    if stage and stage in PIPELINE_STAGES:
+        query["stage"] = stage
+    if q:
+        query["$or"] = [
+            {"name": {"$regex": q, "$options": "i"}},
+            {"phone": {"$regex": q, "$options": "i"}},
+            {"email": {"$regex": q, "$options": "i"}},
+            {"course": {"$regex": q, "$options": "i"}},
+        ]
+    leads = await db.leads.find(query).sort("created_at", -1).to_list(1000)
+    return [_lead_doc_to_out(d) for d in leads]
+
+
+@api_router.post("/leads")
+async def create_lead(payload: LeadIn, user=Depends(get_current_user)):
+    lead_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": lead_id, **payload.model_dump(),
+        "stage": "new", "owner_id": user["id"], "owner_name": user["name"],
+        "created_at": now, "updated_at": now, "last_activity_at": now,
+    }
+    await db.leads.insert_one(doc)
+    await _add_activity(lead_id, "lead_created", f"Lead created by {user['name']}", user)
+    return _lead_doc_to_out(doc)
+
+
+@api_router.get("/leads/{lead_id}")
+async def get_lead(lead_id: str, user=Depends(get_current_user)):
+    doc = await db.leads.find_one({"id": lead_id})
+    if not doc:
+        raise HTTPException(404, "Lead not found")
+    return _lead_doc_to_out(doc)
+
+
+@api_router.patch("/leads/{lead_id}")
+async def update_lead(lead_id: str, payload: LeadUpdate, user=Depends(get_current_user)):
+    update = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if "stage" in update and update["stage"] not in PIPELINE_STAGES:
+        raise HTTPException(400, "Invalid stage")
+    update["updated_at"] = datetime.now(timezone.utc).isoformat()
+    res = await db.leads.find_one_and_update({"id": lead_id}, {"$set": update}, return_document=True)
+    if not res:
+        raise HTTPException(404, "Lead not found")
+    if "stage" in update:
+        await _add_activity(lead_id, "stage_changed", f"Stage moved to {update['stage']}", user)
+    return _lead_doc_to_out(res)
+
+
+@api_router.delete("/leads/{lead_id}")
+async def delete_lead(lead_id: str, user=Depends(get_current_user)):
+    r = await db.leads.delete_one({"id": lead_id})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "Lead not found")
+    await db.messages.delete_many({"lead_id": lead_id})
+    await db.calls.delete_many({"lead_id": lead_id})
+    await db.activities.delete_many({"lead_id": lead_id})
+    await db.tasks.delete_many({"lead_id": lead_id})
+    return {"ok": True}
+
+
+@api_router.post("/leads/{lead_id}/stage")
+async def change_stage(lead_id: str, payload: StageChange, user=Depends(get_current_user)):
+    if payload.stage not in PIPELINE_STAGES:
+        raise HTTPException(400, "Invalid stage")
+    now = datetime.now(timezone.utc).isoformat()
+    res = await db.leads.find_one_and_update(
+        {"id": lead_id},
+        {"$set": {"stage": payload.stage, "updated_at": now, "last_activity_at": now}},
+        return_document=True,
+    )
+    if not res:
+        raise HTTPException(404, "Lead not found")
+    await _add_activity(lead_id, "stage_changed", f"Stage moved to {payload.stage}", user)
+    return _lead_doc_to_out(res)
+
+
+# ---------------- Activity Helper ----------------
+async def _add_activity(lead_id: str, kind: str, text: str, user: dict):
+    now = datetime.now(timezone.utc).isoformat()
+    await db.activities.insert_one({
+        "id": str(uuid.uuid4()), "lead_id": lead_id, "kind": kind,
+        "text": text, "user_id": user["id"], "user_name": user["name"],
+        "created_at": now,
+    })
+    await db.leads.update_one({"id": lead_id}, {"$set": {"last_activity_at": now}})
+
+
+@api_router.get("/leads/{lead_id}/activities")
+async def list_activities(lead_id: str, user=Depends(get_current_user)):
+    docs = await db.activities.find({"lead_id": lead_id}).sort("created_at", -1).to_list(500)
+    for d in docs:
+        d.pop("_id", None)
+    return docs
+
+
+@api_router.post("/leads/{lead_id}/notes")
+async def add_note(lead_id: str, payload: NoteIn, user=Depends(get_current_user)):
+    if not await db.leads.find_one({"id": lead_id}):
+        raise HTTPException(404, "Lead not found")
+    await _add_activity(lead_id, "note", payload.text, user)
+    return {"ok": True}
+
+
+# ---------------- WhatsApp (Mock) ----------------
+@api_router.get("/whatsapp/templates")
+async def list_templates(user=Depends(get_current_user)):
+    return WHATSAPP_TEMPLATES
+
+
+@api_router.get("/leads/{lead_id}/messages")
+async def list_messages(lead_id: str, user=Depends(get_current_user)):
+    docs = await db.messages.find({"lead_id": lead_id}).sort("created_at", 1).to_list(1000)
+    for d in docs:
+        d.pop("_id", None)
+    return docs
+
+
+@api_router.post("/leads/{lead_id}/messages")
+async def send_message(lead_id: str, payload: MessageIn, user=Depends(get_current_user)):
+    lead = await db.leads.find_one({"id": lead_id})
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    now = datetime.now(timezone.utc).isoformat()
+    body = payload.body.replace("{name}", lead.get("name", "")).replace("{course}", lead.get("course", "your course"))
+    msg = {
+        "id": str(uuid.uuid4()), "lead_id": lead_id, "direction": "outbound",
+        "channel": "whatsapp", "body": body, "template": payload.template,
+        "status": "sent (mock)", "created_at": now,
+    }
+    await db.messages.insert_one(msg)
+    await _add_activity(lead_id, "whatsapp_sent", f"WhatsApp: {body[:60]}", user)
+    # Auto-advance to contacted if still new
+    if lead.get("stage") == "new":
+        await db.leads.update_one({"id": lead_id}, {"$set": {"stage": "contacted"}})
+    msg.pop("_id", None)
+    return msg
+
+
+# ---------------- AI Calls (Mock) ----------------
+@api_router.get("/leads/{lead_id}/calls")
+async def list_calls(lead_id: str, user=Depends(get_current_user)):
+    docs = await db.calls.find({"lead_id": lead_id}).sort("created_at", -1).to_list(500)
+    for d in docs:
+        d.pop("_id", None)
+    return docs
+
+
+@api_router.post("/leads/{lead_id}/calls")
+async def trigger_call(lead_id: str, payload: CallIn, user=Depends(get_current_user)):
+    lead = await db.leads.find_one({"id": lead_id})
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    now = datetime.now(timezone.utc).isoformat()
+    lang = payload.language if payload.language in AI_CALL_SCRIPTS else "english"
+    opening = AI_CALL_SCRIPTS[lang].replace("{name}", lead.get("name", "")).replace("{course}", lead.get("course", "the course"))
+    transcript = [{"speaker": "AI", "text": opening}]
+    for line in AI_CALL_RESPONSES:
+        speaker, text = line.split(":", 1)
+        transcript.append({"speaker": speaker.strip(), "text": text.strip()})
+    call_doc = {
+        "id": str(uuid.uuid4()), "lead_id": lead_id, "language": lang,
+        "status": "completed (mock)", "duration_sec": 92,
+        "transcript": transcript,
+        "summary": f"AI follow-up call about {lead.get('course', 'the course')}. Customer asked about fees and demo class.",
+        "outcome": "interested",
+        "created_at": now,
+    }
+    await db.calls.insert_one(call_doc)
+    await _add_activity(lead_id, "ai_call", f"AI call ({lang}) — outcome: interested", user)
+    # Auto-advance stage from new/contacted to interested
+    if lead.get("stage") in ("new", "contacted"):
+        await db.leads.update_one({"id": lead_id}, {"$set": {"stage": "interested"}})
+    call_doc.pop("_id", None)
+    return call_doc
+
+
+# ---------------- Tasks (Follow-ups) ----------------
+@api_router.get("/tasks")
+async def list_tasks(user=Depends(get_current_user)):
+    docs = await db.tasks.find({}).sort("due_date", 1).to_list(500)
+    for d in docs:
+        d.pop("_id", None)
+    return docs
+
+
+@api_router.post("/tasks")
+async def create_task(payload: TaskIn, user=Depends(get_current_user)):
+    doc = {
+        "id": str(uuid.uuid4()), **payload.model_dump(),
+        "done": False, "owner_id": user["id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.tasks.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.patch("/tasks/{task_id}")
+async def update_task(task_id: str, payload: TaskUpdate, user=Depends(get_current_user)):
+    update = {k: v for k, v in payload.model_dump().items() if v is not None}
+    res = await db.tasks.find_one_and_update({"id": task_id}, {"$set": update}, return_document=True)
+    if not res:
+        raise HTTPException(404, "Task not found")
+    res.pop("_id", None)
+    return res
+
+
+@api_router.delete("/tasks/{task_id}")
+async def delete_task(task_id: str, user=Depends(get_current_user)):
+    r = await db.tasks.delete_one({"id": task_id})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "Task not found")
+    return {"ok": True}
+
+
+# ---------------- Analytics ----------------
+@api_router.get("/analytics/overview")
+async def analytics_overview(user=Depends(get_current_user)):
+    total = await db.leads.count_documents({})
+    stages = {}
+    for s in PIPELINE_STAGES:
+        stages[s] = await db.leads.count_documents({"stage": s})
+    enrolled = stages["enrolled"]
+    lost = stages["lost"]
+    closed = enrolled + lost
+    conv_rate = round((enrolled / total) * 100, 1) if total else 0.0
+    win_rate = round((enrolled / closed) * 100, 1) if closed else 0.0
+
+    # source breakdown
+    src_pipeline = [{"$group": {"_id": "$source", "count": {"$sum": 1}}}]
+    sources_raw = await db.leads.aggregate(src_pipeline).to_list(100)
+    sources = [{"source": (s["_id"] or "unknown"), "count": s["count"]} for s in sources_raw]
+
+    # activity counts
+    msg_count = await db.messages.count_documents({})
+    call_count = await db.calls.count_documents({})
+
+    # daily new leads (last 14 days)
+    daily = []
+    today = datetime.now(timezone.utc).date()
+    for i in range(13, -1, -1):
+        day = today - timedelta(days=i)
+        prefix = day.isoformat()
+        c = await db.leads.count_documents({"created_at": {"$regex": f"^{prefix}"}})
+        daily.append({"date": prefix, "count": c})
+
+    return {
+        "total_leads": total, "stages": stages, "conv_rate": conv_rate,
+        "win_rate": win_rate, "sources": sources,
+        "whatsapp_sent": msg_count, "ai_calls": call_count, "daily": daily,
+    }
+
+
+# ---------------- Startup ----------------
+@app.on_event("startup")
+async def on_startup():
+    await db.users.create_index("email", unique=True)
+    await db.leads.create_index("stage")
+    await db.leads.create_index("created_at")
+    await db.messages.create_index("lead_id")
+    await db.calls.create_index("lead_id")
+    await db.activities.create_index("lead_id")
+
+    admin_email = os.environ.get("ADMIN_EMAIL", "admin@leadflow.com").lower()
+    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
+    existing = await db.users.find_one({"email": admin_email})
+    if not existing:
+        await db.users.insert_one({
+            "id": str(uuid.uuid4()), "email": admin_email, "name": "Admin",
+            "password_hash": hash_password(admin_password), "role": "admin",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info(f"Seeded admin: {admin_email}")
+    elif not verify_password(admin_password, existing["password_hash"]):
+        await db.users.update_one(
+            {"email": admin_email},
+            {"$set": {"password_hash": hash_password(admin_password)}},
+        )
+
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    client.close()
+
+
+# Health
 @api_router.get("/")
 async def root():
-    return {"message": "Hello World"}
+    return {"app": "LeadFlow CRM", "ok": True}
 
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
 
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
-
-# Include the router in the main app
 app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
