@@ -673,6 +673,9 @@ async def root():
 
 app.include_router(api_router)
 
+from meta_integrations import build_meta_router
+app.include_router(build_meta_router(db, get_current_user, _add_activity))
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,

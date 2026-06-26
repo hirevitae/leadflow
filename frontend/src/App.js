@@ -9,6 +9,7 @@ import Leads from "@/pages/Leads";
 import LeadDetail from "@/pages/LeadDetail";
 import Pipeline from "@/pages/Pipeline";
 import Analytics from "@/pages/Analytics";
+import Inbox from "@/pages/Inbox";
 import { Toaster } from "@/components/ui/sonner";
 
 function App() {
@@ -34,10 +35,8 @@ function App() {
             path="/pipeline"
             element={<ProtectedRoute><Layout><Pipeline /></Layout></ProtectedRoute>}
           />
-          <Route
-            path="/analytics"
-            element={<ProtectedRoute><Layout><Analytics /></Layout></ProtectedRoute>}
-          />
+          <Route path="/analytics" element={<ProtectedRoute><Layout><Analytics /></Layout></ProtectedRoute>} />
+          <Route path="/inbox" element={<ProtectedRoute><Layout><Inbox /></Layout></ProtectedRoute>} />
         </Routes>
       </BrowserRouter>
       <Toaster richColors position="top-right" />
