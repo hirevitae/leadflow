@@ -12,10 +12,13 @@ import jwt
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, status
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends, status, UploadFile, File
+from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
+import pandas as pd
+import io
 
 # ---------------- App / DB ----------------
 mongo_url = os.environ["MONGO_URL"]
@@ -30,6 +33,9 @@ logger = logging.getLogger(__name__)
 
 JWT_ALGORITHM = "HS256"
 PIPELINE_STAGES = ["new", "contacted", "interested", "demo_scheduled", "negotiation", "enrolled", "lost"]
+LEAD_COLUMNS = ["name", "phone", "email", "course", "source", "language", "priority", "notes", "stage"]
+VALID_LANGS = {"english", "hindi"}
+VALID_PRIORITIES = {"low", "medium", "high"}
 
 
 # ---------------- Auth Helpers ----------------
@@ -267,6 +273,137 @@ async def create_lead(payload: LeadIn, user=Depends(get_current_user)):
     await db.leads.insert_one(doc)
     await _add_activity(lead_id, "lead_created", f"Lead created by {user['name']}", user)
     return _lead_doc_to_out(doc)
+
+
+@api_router.get("/leads/template.xlsx")
+async def download_template(user=Depends(get_current_user)):
+    sample = pd.DataFrame([
+        {"name": "Rahul Sharma", "phone": "+919876543210", "email": "rahul@example.com",
+         "course": "Data Science", "source": "instagram", "language": "hindi",
+         "priority": "high", "notes": "Met at career fair", "stage": "new"},
+        {"name": "Priya Iyer", "phone": "+919812345678", "email": "priya@example.com",
+         "course": "Full Stack Web", "source": "website", "language": "english",
+         "priority": "medium", "notes": "", "stage": "new"},
+    ], columns=LEAD_COLUMNS)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
+        sample.to_excel(w, sheet_name="leads", index=False)
+        ws = w.sheets["leads"]
+        for i, col in enumerate(LEAD_COLUMNS):
+            ws.set_column(i, i, max(len(col) + 4, 16))
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="leads_template.xlsx"'},
+    )
+
+
+@api_router.get("/leads/export.xlsx")
+async def export_leads(user=Depends(get_current_user)):
+    leads = await db.leads.find({}).sort("created_at", -1).to_list(10000)
+    rows = []
+    for l in leads:
+        rows.append({
+            "name": l.get("name", ""), "phone": l.get("phone", ""),
+            "email": l.get("email", "") or "", "course": l.get("course", "") or "",
+            "source": l.get("source", "") or "", "language": l.get("language", "english"),
+            "priority": l.get("priority", "medium"), "notes": l.get("notes", "") or "",
+            "stage": l.get("stage", "new"), "owner": l.get("owner_name", ""),
+            "created_at": l.get("created_at", ""),
+        })
+    df = pd.DataFrame(rows)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
+        df.to_excel(w, sheet_name="leads", index=False)
+        ws = w.sheets["leads"]
+        for i, col in enumerate(df.columns):
+            ws.set_column(i, i, max(len(col) + 4, 18))
+    buf.seek(0)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="leads_export_{stamp}.xlsx"'},
+    )
+
+
+@api_router.post("/leads/bulk-import")
+async def bulk_import(file: UploadFile = File(...), user=Depends(get_current_user)):
+    if not file.filename:
+        raise HTTPException(400, "No file provided")
+    name = file.filename.lower()
+    content = await file.read()
+    try:
+        if name.endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(content))
+        elif name.endswith(".xlsx") or name.endswith(".xls"):
+            df = pd.read_excel(io.BytesIO(content))
+        else:
+            raise HTTPException(400, "Unsupported file type. Upload .xlsx, .xls or .csv")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"Could not parse file: {e}")
+
+    if "name" not in df.columns or "phone" not in df.columns:
+        raise HTTPException(400, "File must contain at least 'name' and 'phone' columns")
+
+    created, skipped, errors = 0, 0, []
+    now = datetime.now(timezone.utc).isoformat()
+    docs = []
+    for idx, row in df.iterrows():
+        try:
+            nm = str(row.get("name", "")).strip()
+            ph = str(row.get("phone", "")).strip()
+            if not nm or not ph or nm.lower() == "nan" or ph.lower() == "nan":
+                skipped += 1
+                continue
+            lang = str(row.get("language", "english")).strip().lower() or "english"
+            if lang not in VALID_LANGS:
+                lang = "english"
+            prio = str(row.get("priority", "medium")).strip().lower() or "medium"
+            if prio not in VALID_PRIORITIES:
+                prio = "medium"
+            stage = str(row.get("stage", "new")).strip().lower() or "new"
+            if stage not in PIPELINE_STAGES:
+                stage = "new"
+
+            def _cell(key):
+                v = row.get(key, "")
+                if v is None:
+                    return ""
+                s = str(v).strip()
+                return "" if s.lower() == "nan" else s
+
+            doc = {
+                "id": str(uuid.uuid4()), "name": nm, "phone": ph,
+                "email": _cell("email") or None,
+                "course": _cell("course") or None,
+                "source": (_cell("source") or "import").lower(),
+                "language": lang, "priority": prio,
+                "notes": _cell("notes") or None,
+                "stage": stage,
+                "owner_id": user["id"], "owner_name": user["name"],
+                "created_at": now, "updated_at": now, "last_activity_at": now,
+            }
+            docs.append(doc)
+        except Exception as e:
+            errors.append({"row": int(idx) + 2, "error": str(e)})
+
+    if docs:
+        await db.leads.insert_many(docs)
+        acts = [{
+            "id": str(uuid.uuid4()), "lead_id": d["id"], "kind": "lead_created",
+            "text": f"Imported by {user['name']}",
+            "user_id": user["id"], "user_name": user["name"],
+            "created_at": now,
+        } for d in docs]
+        if acts:
+            await db.activities.insert_many(acts)
+        created = len(docs)
+
+    return {"created": created, "skipped": skipped, "errors": errors, "total_rows": int(len(df))}
 
 
 @api_router.get("/leads/{lead_id}")

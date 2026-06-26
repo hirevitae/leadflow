@@ -4,6 +4,7 @@ import { api, STAGES } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import AddLeadDialog from "@/components/AddLeadDialog";
+import BulkImportDialog from "@/components/BulkImportDialog";
 import StageBadge from "@/components/StageBadge";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -41,7 +42,10 @@ export default function Leads() {
           <h1 className="font-display font-bold text-3xl tracking-tight">Leads</h1>
           <p className="text-sm text-zinc-500 mt-1">All your student leads with filters & search.</p>
         </div>
-        <AddLeadDialog onCreated={load} />
+        <div className="flex items-center gap-2">
+          <BulkImportDialog onDone={load} />
+          <AddLeadDialog onCreated={load} />
+        </div>
       </div>
 
       <Card className="mb-4">
