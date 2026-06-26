@@ -432,9 +432,9 @@ async def bulk_import(file: UploadFile = File(...), user=Depends(get_current_use
     content = await file.read()
     try:
         if name.endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(content))
+            df = pd.read_csv(io.BytesIO(content), dtype=str)
         elif name.endswith(".xlsx") or name.endswith(".xls"):
-            df = pd.read_excel(io.BytesIO(content))
+            df = pd.read_excel(io.BytesIO(content), dtype=str)
         else:
             raise HTTPException(400, "Unsupported file type. Upload .xlsx, .xls or .csv")
     except HTTPException:
@@ -606,7 +606,7 @@ async def send_message(lead_id: str, payload: MessageIn, user=Depends(get_curren
     if not lead:
         raise HTTPException(404, "Lead not found")
     now = datetime.now(timezone.utc).isoformat()
-    body = payload.body.replace("{name}", lead.get("name", "")).replace("{course}", lead.get("course", "your course"))
+    body = payload.body.replace("{name}", lead.get("name") or "").replace("{course}", lead.get("course") or "your course")
     msg = {
         "id": str(uuid.uuid4()), "lead_id": lead_id, "direction": "outbound",
         "channel": "whatsapp", "body": body, "template": payload.template,
@@ -638,7 +638,7 @@ async def trigger_call(lead_id: str, payload: CallIn, user=Depends(get_current_u
     now = datetime.now(timezone.utc).isoformat()
     scripts = await get_call_scripts()
     lang = payload.language if payload.language in scripts else "english"
-    opening = scripts[lang].replace("{name}", lead.get("name", "")).replace("{course}", lead.get("course", "the course"))
+    opening = scripts[lang].replace("{name}", lead.get("name") or "").replace("{course}", lead.get("course") or "the course")
     transcript = [{"speaker": "AI", "text": opening}]
     for line in AI_CALL_RESPONSES:
         speaker, text = line.split(":", 1)
@@ -673,7 +673,7 @@ async def bulk_whatsapp(payload: BulkWhatsAppIn, user=Depends(get_current_user))
     now = datetime.now(timezone.utc).isoformat()
     sent = 0
     for lead in leads:
-        body = template["body"].replace("{name}", lead.get("name", "")).replace("{course}", lead.get("course", "your course"))
+        body = template["body"].replace("{name}", lead.get("name") or "").replace("{course}", lead.get("course") or "your course")
         await db.messages.insert_one({
             "id": str(uuid.uuid4()), "lead_id": lead["id"], "direction": "outbound",
             "channel": "whatsapp", "body": body, "template": template["id"],
@@ -696,7 +696,7 @@ async def bulk_calls(payload: BulkCallsIn, user=Depends(get_current_user)):
     now = datetime.now(timezone.utc).isoformat()
     called = 0
     for lead in leads:
-        opening = scripts[lang].replace("{name}", lead.get("name", "")).replace("{course}", lead.get("course", "the course"))
+        opening = scripts[lang].replace("{name}", lead.get("name") or "").replace("{course}", lead.get("course") or "the course")
         transcript = [{"speaker": "AI", "text": opening}]
         for line in AI_CALL_RESPONSES:
             speaker, text = line.split(":", 1)
@@ -896,7 +896,10 @@ async def get_templates_config(user=Depends(get_current_user)):
 async def update_templates_config(payload: TemplatesConfigIn, user=Depends(get_current_user)):
     require_admin(user)
     if payload.whatsapp_templates:
-        await set_config("whatsapp_templates", payload.whatsapp_templates)
+        seen = {}
+        for t in payload.whatsapp_templates:
+            seen[t.get("id")] = t
+        await set_config("whatsapp_templates", list(seen.values()))
     if payload.call_scripts:
         await set_config("call_scripts", payload.call_scripts)
     return {"whatsapp_templates": await get_templates(), "call_scripts": await get_call_scripts()}

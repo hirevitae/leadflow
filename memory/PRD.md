@@ -30,7 +30,17 @@
 - Analytics: stage bar chart, source pie chart, daily new-leads line chart, conversion + win rate KPIs.
 
 ## Implemented (Jun 2026)
-- **Bulk Outreach** (Leads page): single-stage-group bulk WhatsApp send (template-based) + bulk AI calls (EN/HI) via `POST /api/bulk/whatsapp` and `POST /api/bulk/calls`. Dialog shows live per-stage lead counts and a confirmation preview; auto-advances stages (mock send logic, consistent with per-lead flow).
+- **Central Settings page (admin)** — everything previously hardcoded is now editable live (no code changes):
+  - Integrations: status-only view (Configured / Not configured) for WhatsApp, FB/IG, Resend email, Meta verify, LLM. Keys stay in backend/.env per user choice.
+  - Auto-search: search keywords (chips), RSS source URL templates ({q}), schedule interval (1–24h), enable toggle, auto-publish toggle — drives a background scheduler in social_posts.py.
+  - Templates: WhatsApp templates (add/edit/delete, EN/HI) + AI call opening scripts (EN/HI), DB-backed and used by send/bulk/call endpoints.
+  - Team: round-robin assignment toggle.
+- **P1 features:** in-app follow-up reminders (Follow-ups page + Schedule dialog, overdue badges); role-based access (admin sees all, counsellor sees only own leads/tasks; admin-only Team/Settings nav); Team management (users CRUD); lead assignment + round-robin distribution; dedup on bulk import (phone, `dtype=str` preserves `+`); Email channel via Resend (LeadDetail Email tab; needs RESEND_API_KEY in .env).
+- Cleaned a duplicated startup/router block in server.py.
+- Verified: 21/21 backend tests pass; Settings UI rendered & functional.
+
+## Implemented earlier (Jun 2026)
+- **Bulk Outreach** (Leads page): single-stage-group bulk WhatsApp send (template-based) + bulk AI calls (EN/HI) via `POST /api/bulk/whatsapp` and `POST /api/bulk/calls`. Dialog shows live per-stage lead counts and a confirmation preview; auto-advances stages (mock send logic).
 
 ## Backlog (prioritized)
 - **P0** — Real WhatsApp send (Twilio WhatsApp Business or Meta Cloud API).
