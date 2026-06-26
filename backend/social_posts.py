@@ -1,4 +1,4 @@
-"""Hourly social media post generator: pulls news, drafts post + banner via AI, queues for approval, then publishes to FB/IG."""
+"""Configurable social post generator: pulls news from configured sources/keywords, drafts post + banner via AI, queues for approval, publishes to FB/IG. Includes an optional background scheduler."""
 import os, uuid, asyncio, base64, httpx
 from datetime import datetime, timezone
 from xml.etree import ElementTree as ET
@@ -6,29 +6,33 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
-DEFAULT_TOPICS = ["SSC CGL recruitment", "IBPS PO notification", "UPSC notification", "government jobs India"]
+DEFAULT_SOURCES = ["https://news.google.com/rss/search?q={q}&hl=en-IN&gl=IN&ceid=IN:en"]
+DEFAULT_KEYWORDS = ["SSC CGL recruitment", "IBPS PO notification", "UPSC notification", "government jobs India"]
 GRAPH = "https://graph.facebook.com/v19.0"
 
 
-async def fetch_news(topic: str, limit: int = 5):
-    url = f"https://news.google.com/rss/search?q={quote(topic)}&hl=en-IN&gl=IN&ceid=IN:en"
-    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
-        r = await c.get(url); r.raise_for_status()
+async def fetch_news(topic: str, sources: list, limit: int = 5):
     items = []
-    try:
-        root = ET.fromstring(r.text)
-        for item in root.iter("item"):
-            t = item.findtext("title") or ""; link = item.findtext("link") or ""
-            pub = item.findtext("pubDate") or ""
-            items.append({"title": t, "link": link, "pub_date": pub})
-            if len(items) >= limit: break
-    except Exception:
-        pass
+    for src in (sources or DEFAULT_SOURCES):
+        url = src.replace("{q}", quote(topic)) if "{q}" in src else src
+        try:
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+                r = await c.get(url); r.raise_for_status()
+            root = ET.fromstring(r.text)
+            for item in root.iter("item"):
+                t = item.findtext("title") or ""; link = item.findtext("link") or ""
+                pub = item.findtext("pubDate") or ""
+                items.append({"title": t, "link": link, "pub_date": pub})
+                if len(items) >= limit:
+                    break
+        except Exception:
+            continue
+        if len(items) >= limit:
+            break
     return items
 
 
 async def gen_post_text(topic: str, headline: str) -> dict:
-    """Returns {caption, banner_text} using Claude."""
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
         key = os.environ["EMERGENT_LLM_KEY"]
@@ -50,7 +54,6 @@ async def gen_post_text(topic: str, headline: str) -> dict:
 
 
 async def gen_banner_image(banner_text: str, topic: str) -> str | None:
-    """Generate a banner via Nano Banana, returns base64-encoded PNG or None."""
     try:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
         key = os.environ["EMERGENT_LLM_KEY"]
@@ -60,7 +63,6 @@ async def gen_banner_image(banner_text: str, topic: str) -> str | None:
                   f"Theme: {topic}. Style: clean modern Indian education branding, blue and white palette, "
                   f"professional, eye-catching. No watermarks.")
         result = await chat.send_message(UserMessage(text=prompt, generate_images=True))
-        # Result format varies; check for images
         for img in getattr(result, "images", []) or []:
             if hasattr(img, "data"): return img.data
             if isinstance(img, dict) and img.get("data"): return img["data"]
@@ -77,8 +79,21 @@ class GenerateIn(BaseModel):
 def build_social_router(db, get_current_user):
     router = APIRouter(prefix="/api/social", tags=["social"])
 
+    async def _content_cfg() -> dict:
+        doc = await db.app_config.find_one({"key": "content_config"})
+        cfg = (doc or {}).get("value") or {}
+        return {
+            "search_keywords": cfg.get("search_keywords") or DEFAULT_KEYWORDS,
+            "search_sources": cfg.get("search_sources") or DEFAULT_SOURCES,
+            "interval_hours": int(cfg.get("interval_hours", 1) or 1),
+            "enabled": bool(cfg.get("enabled", False)),
+            "auto_publish": bool(cfg.get("auto_publish", False)),
+            "last_run": cfg.get("last_run"),
+        }
+
     async def _generate_one(topic: str) -> dict:
-        news = await fetch_news(topic, limit=3)
+        cfg = await _content_cfg()
+        news = await fetch_news(topic, cfg["search_sources"], limit=3)
         headline = news[0]["title"] if news else f"Latest update on {topic}"
         text = await gen_post_text(topic, headline)
         image_b64 = await gen_banner_image(text["banner_text"], topic)
@@ -93,9 +108,41 @@ def build_social_router(db, get_current_user):
         d = {**doc}; d.pop("_id", None)
         return d
 
+    async def _do_publish(p: dict, targets: set) -> dict:
+        results = {}
+        page_id = os.environ.get("FB_PAGE_ID"); tok = os.environ.get("FB_PAGE_ACCESS_TOKEN")
+        ig = os.environ.get("IG_BUSINESS_ACCOUNT_ID")
+        if "facebook" in targets:
+            if not (page_id and tok):
+                results["facebook"] = "not_configured"
+            else:
+                try:
+                    async with httpx.AsyncClient(timeout=20) as c:
+                        if p.get("image_b64"):
+                            files = {"source": ("banner.png", base64.b64decode(p["image_b64"]), "image/png")}
+                            data = {"caption": p["caption"], "access_token": tok}
+                            r = await c.post(f"{GRAPH}/{page_id}/photos", data=data, files=files)
+                        else:
+                            r = await c.post(f"{GRAPH}/{page_id}/feed",
+                                             params={"message": p["caption"], "access_token": tok})
+                        r.raise_for_status()
+                        results["facebook"] = r.json()
+                except Exception as e:
+                    results["facebook"] = f"error: {e}"
+        if "instagram" in targets:
+            if not (ig and tok and p.get("image_b64")):
+                results["instagram"] = "needs_image_and_keys"
+            else:
+                results["instagram"] = "IG requires public image URL - upload banner to your CDN then call /messages. Skipped for now."
+        await db.social_posts.update_one({"id": p["id"]},
+            {"$set": {"status": "published", "publish_result": results,
+                      "published_at": datetime.now(timezone.utc).isoformat()}})
+        return results
+
     @router.post("/generate")
     async def generate(payload: GenerateIn, user=Depends(get_current_user)):
-        topics = payload.topics or DEFAULT_TOPICS
+        cfg = await _content_cfg()
+        topics = payload.topics or cfg["search_keywords"]
         out = []
         for t in topics[:6]:
             try: out.append(await _generate_one(t))
@@ -133,66 +180,57 @@ def build_social_router(db, get_current_user):
         targets = set(payload.get("targets", ["facebook", "instagram"]))
         p = await db.social_posts.find_one({"id": post_id})
         if not p: raise HTTPException(404, "Not found")
-        results = {}
-        page_id = os.environ.get("FB_PAGE_ID"); tok = os.environ.get("FB_PAGE_ACCESS_TOKEN")
-        ig = os.environ.get("IG_BUSINESS_ACCOUNT_ID")
-        img_data_uri = None
-        if p.get("image_b64"):
-            img_data_uri = f"data:image/png;base64,{p['image_b64']}"
-
-        if "facebook" in targets:
-            if not (page_id and tok):
-                results["facebook"] = "not_configured"
-            else:
-                try:
-                    async with httpx.AsyncClient(timeout=20) as c:
-                        if p.get("image_b64"):
-                            # Upload photo
-                            files = {"source": ("banner.png", base64.b64decode(p["image_b64"]), "image/png")}
-                            data = {"caption": p["caption"], "access_token": tok}
-                            r = await c.post(f"{GRAPH}/{page_id}/photos", data=data, files=files)
-                        else:
-                            r = await c.post(f"{GRAPH}/{page_id}/feed",
-                                params={"message": p["caption"], "access_token": tok})
-                        r.raise_for_status()
-                        results["facebook"] = r.json()
-                except Exception as e: results["facebook"] = f"error: {e}"
-
-        if "instagram" in targets:
-            if not (ig and tok and p.get("image_b64")):
-                results["instagram"] = "needs_image_and_keys"
-            else:
-                # IG requires a publicly hosted image URL. We host via the FB Page photo upload's URL.
-                results["instagram"] = "IG requires public image URL - upload banner to your CDN then call /messages. Skipped for now."
-
-        await db.social_posts.update_one({"id": post_id},
-            {"$set": {"status": "published", "publish_result": results,
-                      "published_at": datetime.now(timezone.utc).isoformat()}})
+        results = await _do_publish(p, targets)
         return {"ok": True, "results": results}
 
     @router.get("/topics")
     async def topics(user=Depends(get_current_user)):
-        cfg = await db.app_config.find_one({"key": "social_topics"})
-        return {"topics": (cfg or {}).get("value", DEFAULT_TOPICS)}
+        cfg = await _content_cfg()
+        return {"topics": cfg["search_keywords"]}
 
     @router.post("/topics")
     async def set_topics(payload: dict, user=Depends(get_current_user)):
-        topics = payload.get("topics", [])
-        await db.app_config.update_one({"key": "social_topics"}, {"$set": {"value": topics}}, upsert=True)
-        return {"ok": True, "topics": topics}
+        kws = payload.get("topics", [])
+        doc = await db.app_config.find_one({"key": "content_config"})
+        val = (doc or {}).get("value") or {}
+        val["search_keywords"] = kws
+        await db.app_config.update_one({"key": "content_config"}, {"$set": {"value": val}}, upsert=True)
+        return {"ok": True, "topics": kws}
 
-    # Background hourly scheduler
-    async def hourly_loop():
+    # ---- Background scheduler (interval-driven, toggleable from Settings) ----
+    async def scheduler_loop():
         while True:
             try:
-                await asyncio.sleep(3600)
-                cfg = await db.app_config.find_one({"key": "social_topics"})
-                topics = (cfg or {}).get("value", DEFAULT_TOPICS)
-                for t in topics[:3]:
-                    try: await _generate_one(t)
+                await asyncio.sleep(60)
+                cfg = await _content_cfg()
+                if not cfg["enabled"]:
+                    continue
+                interval = max(1, cfg["interval_hours"]) * 3600
+                last = cfg.get("last_run")
+                if last:
+                    try:
+                        last_ts = datetime.fromisoformat(last)
+                        if (datetime.now(timezone.utc) - last_ts).total_seconds() < interval:
+                            continue
+                    except Exception:
+                        pass
+                posts = []
+                for t in (cfg["search_keywords"] or DEFAULT_KEYWORDS)[:5]:
+                    try: posts.append(await _generate_one(t))
                     except Exception: pass
+                doc = await db.app_config.find_one({"key": "content_config"})
+                val = (doc or {}).get("value") or {}
+                val["last_run"] = datetime.now(timezone.utc).isoformat()
+                await db.app_config.update_one({"key": "content_config"}, {"$set": {"value": val}}, upsert=True)
+                if cfg["auto_publish"]:
+                    for p in posts:
+                        try: await _do_publish(p, {"facebook", "instagram"})
+                        except Exception: pass
             except Exception:
                 await asyncio.sleep(60)
 
-    router._hourly_task = asyncio.get_event_loop().create_task(hourly_loop()) if False else None
+    def start_scheduler():
+        return asyncio.create_task(scheduler_loop())
+
+    router.start_scheduler = start_scheduler
     return router

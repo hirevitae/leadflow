@@ -1,0 +1,84 @@
+{
+  "summary": "Tested all P1 features and the Settings page end-to-end. 18/21 backend tests pass. Settings (4 tabs), Team mgmt, Followups, RBAC nav, and counsellor login flow all work in the UI. Found 2 real HIGH backend bugs: (1) /api/bulk/whatsapp and /api/bulk/calls crash 500 when a lead has name=null or course=null (TypeError in .replace), and (2) /api/leads/bulk-import strips the leading '+' from phone numbers (pandas auto-detects numeric columns as int) which both corrupts stored phones and silently breaks dedup against existing DB records. One minor frontend warning about duplicate React keys in the templates dropdown (test_tpl).",
+  "tested_scope": ["backend", "frontend", "rbac", "integration", "settings", "p1"],
+  "passed": [
+    "POST /api/auth/login admin -> 200",
+    "Admin sees nav-team + nav-settings; Counsellor does NOT (verified in UI)",
+    "GET/POST/DELETE /api/users (admin) — full CRUD",
+    "Admin cannot delete own account -> 400",
+    "GET /api/users as counsellor -> 403",
+    "Counsellor GET /api/leads returns only own leads",
+    "POST /api/leads/{id}/assign reassigns owner + writes 'assigned' activity + owner_name updates",
+    "Round-robin (PUT /api/config/team {round_robin:true}) rotates owner_id across counsellors over 3 POST /api/leads",
+    "POST /api/tasks (due_date) creates task with lead_name, list shows it, PATCH marks done=True",
+    "Counsellor sees own tasks only via GET /api/tasks",
+    "POST /api/leads/{id}/email -> 400 with proper message when RESEND_API_KEY missing (EXPECTED)",
+    "GET /api/leads/{id}/emails -> [] (200)",
+    "GET /api/integrations/status returns booleans; meta_verify=true, llm=true, email=false (matches spec)",
+    "GET/PUT /api/config/content round-trip (search_keywords/interval_hours/enabled/auto_publish/search_sources persist)",
+    "GET/PUT /api/config/templates round-trip; GET /api/whatsapp/templates reflects saved custom template (DB-backed)",
+    "GET/PUT /api/config/team round-trip",
+    "Settings UI: all 4 tabs present (integrations/content/templates/team); Configured/Not-configured badges render correctly (WhatsApp/FB/IG/Email = Not configured, Meta verify + LLM = Configured)",
+    "Team page: add-user-btn present, user table renders",
+    "Follow-ups page loads and shows 'Overdue' badge text",
+    "LeadDetail open-schedule-followup-btn present"
+  ],
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/bulk/whatsapp and POST /api/bulk/calls",
+        "issue": "Both endpoints return 500 (TypeError: replace() argument 2 must be str, not None) when any lead in the targeted stage has name=null or course=null. lead.get('name', '') / lead.get('course', 'the course') returns None when the key exists with a null value, so the subsequent .replace fails.",
+        "priority": "HIGH",
+        "fix": "Use `(lead.get('name') or '')` and `(lead.get('course') or 'the course')` instead of dict.get default, at server.py lines 676 (bulk_whatsapp) and 699 (bulk_calls)."
+      },
+      {
+        "endpoint": "POST /api/leads/bulk-import",
+        "issue": "Phone numbers like '+917708414' are stored as '917708414' (leading '+' stripped). pandas read_csv auto-detects the phone column as int64 because all values start with '+digits'. Then str(int) drops the '+'. Consequences: (a) stored phone numbers are corrupted (visible in UI: TEST_dup1 shows '917708414' while TEST_DedupSeed shows '+917708414'), (b) dedup against existing DB records silently fails — duplicates count reported as 1 instead of 2 in the test CSV.",
+        "priority": "HIGH",
+        "fix": "Read CSV/XLSX with dtype=str (e.g. pd.read_csv(..., dtype=str) and pd.read_excel(..., dtype=str)) inside bulk_import (around line 432-444) so phone/email/etc are never auto-converted to numeric."
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "WhatsAppPanel/templates dropdown",
+        "issue": "React warning: 'Encountered two children with the same key, test_tpl'. The Select uses template.id as the key but custom templates may share the same id across runs (no de-duplication when saving via PUT /api/config/templates).",
+        "selector": "Select inside [data-testid*=wa-]",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_p1_features.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix /api/bulk/whatsapp + /api/bulk/calls null-safety: change `lead.get('name', '')` to `(lead.get('name') or '')` and same for 'course' (server.py L676 and L699).",
+    "Fix /api/leads/bulk-import to preserve '+' in phone numbers: read CSV/XLSX with dtype=str so pandas doesn't coerce phone column to int. After fix, dedup against existing DB records will work.",
+    "(Optional, low priority) De-duplicate whatsapp_templates by id in PUT /api/config/templates to avoid React duplicate-key warnings in the templates dropdown.",
+    "(Test hygiene) Consider adding a cleanup endpoint or TEST_ prefix cleanup for the 25+ TEST_* leads now in DB from these and previous iterations."
+  ],
+  "critical_code_review_comments": [
+    "server.py: dict.get(key, default) returns None when key exists with value None (Mongo will happily store None). Use `(d.get(key) or default)` pattern everywhere replace() is chained on lead fields (name/course/email).",
+    "server.py bulk_import: pandas read_csv/read_excel without explicit dtype=str is unsafe for phone/email/id fields — silently corrupts data. This is a data-integrity bug, not just a dedup bug.",
+    "server.py /config/templates PUT does not validate/dedupe template ids; UI uses template.id as React key so duplicates produce console warnings and unstable selection."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_p1_features.py (new)",
+    "/app/test_reports/iteration_3.json (new)"
+  ],
+  "success_rate": {"backend": "85% (18/21)", "frontend": "95% (all flows reachable; only minor dup-key console warning)"},
+  "test_credentials": "admin@leadflow.com/admin123 (admin), counsellor1@leadflow.com/test123 (counsellor — created during this run, still in DB)",
+  "seed_data_creation": "Created counsellor1@leadflow.com plus several TEST_* leads (TEST_RR_*, TEST_AssignLead, TEST_TaskLead, TEST_EmailLead, TEST_DedupSeed, TEST_dup1/2). Several TEST_* tasks and a 'test_tpl' custom whatsapp template were added via /api/config/templates.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend test suite at /app/backend/tests/test_p1_features.py — 21 tests, runs with `pytest backend/tests/test_p1_features.py -v --junitxml=/app/test_reports/pytest/pytest_results.xml`. The 3 failures (bulk_whatsapp, bulk_calls, bulk-import dedup) all reproduce the two HIGH bugs above; re-running after fixes should give 21/21. Counsellor account already exists. RESEND_API_KEY intentionally absent — email-send 400 is EXPECTED and asserted as success in the test.",
+  "rca": {
+    "bulk_outreach_500": "lead.get('name', '') returns None when the lead document has name: null (vs key absent). Chained .replace then receives None as arg and raises TypeError. Reproduction: create a lead via POST /api/leads with only phone+source, then POST /api/bulk/whatsapp {stage:'new',template_id:'intro_en'} or /api/bulk/calls. Mitigation: use `(lead.get('name') or '')`.",
+    "bulk_import_dedup": "pandas.read_csv auto-detects the phone column as int64 (all values start with '+digits'). Then `str(row.get('phone',''))` produces '917708414' instead of '+917708414'. Existing leads stored via /api/leads keep the '+', so the comparison `ph in existing_phones` never matches → duplicates silently created. Mitigation: pass dtype=str to read_csv/read_excel."
+  }
+}

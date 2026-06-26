@@ -1,6 +1,6 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { LayoutDashboard, Users, KanbanSquare, BarChart3, Inbox, Sparkles, LogOut, GraduationCap } from "lucide-react";
+import { LayoutDashboard, Users, KanbanSquare, BarChart3, Inbox, Sparkles, LogOut, GraduationCap, CalendarClock, UserCog, Settings as SettingsIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const navItems = [
@@ -9,7 +9,13 @@ const navItems = [
   { to: "/content", label: "Content Studio", icon: Sparkles, testid: "nav-content" },
   { to: "/leads", label: "Leads", icon: Users, testid: "nav-leads" },
   { to: "/pipeline", label: "Pipeline", icon: KanbanSquare, testid: "nav-pipeline" },
+  { to: "/followups", label: "Follow-ups", icon: CalendarClock, testid: "nav-followups" },
   { to: "/analytics", label: "Analytics", icon: BarChart3, testid: "nav-analytics" },
+];
+
+const adminNavItems = [
+  { to: "/team", label: "Team", icon: UserCog, testid: "nav-team" },
+  { to: "/settings", label: "Settings", icon: SettingsIcon, testid: "nav-settings" },
 ];
 
 export default function Layout({ children }) {
@@ -48,6 +54,26 @@ export default function Layout({ children }) {
               {item.label}
             </NavLink>
           ))}
+          {user?.role === "admin" && (
+            <>
+              <div className="px-3 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-400">Admin</div>
+              {adminNavItems.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  data-testid={item.testid}
+                  className={({ isActive }) =>
+                    `flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
+                      isActive ? "bg-blue-600 text-white" : "text-zinc-700 hover:bg-zinc-100"
+                    }`
+                  }
+                >
+                  <item.icon className="w-4 h-4" strokeWidth={1.75} />
+                  {item.label}
+                </NavLink>
+              ))}
+            </>
+          )}
         </nav>
 
         <div className="border-t border-zinc-200 p-3">

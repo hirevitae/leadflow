@@ -9,6 +9,8 @@ import uuid
 import logging
 import bcrypt
 import jwt
+import asyncio
+import resend
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -175,6 +177,39 @@ class TaskUpdate(BaseModel):
     due_date: Optional[str] = None
 
 
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=6)
+    name: str
+    role: str = "counsellor"
+
+
+class AssignIn(BaseModel):
+    owner_id: str
+
+
+class EmailIn(BaseModel):
+    subject: str
+    body: str
+
+
+class TeamSettingsIn(BaseModel):
+    round_robin: bool
+
+
+class ContentConfigIn(BaseModel):
+    search_keywords: List[str] = []
+    search_sources: List[str] = []
+    interval_hours: int = 1
+    enabled: bool = False
+    auto_publish: bool = False
+
+
+class TemplatesConfigIn(BaseModel):
+    whatsapp_templates: List[dict] = []
+    call_scripts: dict = {}
+
+
 # ---------------- Templates / Scripts ----------------
 WHATSAPP_TEMPLATES = [
     {"id": "intro_en", "lang": "english", "name": "Introduction",
@@ -204,6 +239,54 @@ AI_CALL_RESPONSES = [
     "Customer: Can I get a demo class first?",
     "AI: Absolutely. I will share a demo invite on WhatsApp right away.",
 ]
+
+DEFAULT_NEWS_SOURCES = ["https://news.google.com/rss/search?q={q}&hl=en-IN&gl=IN&ceid=IN:en"]
+DEFAULT_CONTENT_CONFIG = {
+    "search_keywords": ["SSC CGL recruitment", "IBPS PO notification", "UPSC notification", "government jobs India"],
+    "search_sources": DEFAULT_NEWS_SOURCES,
+    "interval_hours": 1, "enabled": False, "auto_publish": False,
+}
+
+
+# ---------------- Config Helpers (DB-backed, live editable) ----------------
+async def get_config(key: str, default):
+    doc = await db.app_config.find_one({"key": key})
+    return doc.get("value", default) if doc else default
+
+
+async def set_config(key: str, value):
+    await db.app_config.update_one({"key": key}, {"$set": {"value": value}}, upsert=True)
+
+
+async def get_templates() -> list:
+    return await get_config("whatsapp_templates", WHATSAPP_TEMPLATES)
+
+
+async def get_call_scripts() -> dict:
+    return await get_config("call_scripts", AI_CALL_SCRIPTS)
+
+
+async def _get_team_settings() -> dict:
+    return await get_config("team_settings", {"round_robin": False, "rr_index": 0})
+
+
+async def _assign_owner(creator: dict):
+    s = await _get_team_settings()
+    if not s.get("round_robin"):
+        return creator["id"], creator["name"]
+    counsellors = await db.users.find({"role": "counsellor"}).sort("created_at", 1).to_list(500)
+    if not counsellors:
+        return creator["id"], creator["name"]
+    idx = int(s.get("rr_index", 0)) % len(counsellors)
+    chosen = counsellors[idx]
+    s["rr_index"] = idx + 1
+    await set_config("team_settings", s)
+    return chosen["id"], chosen["name"]
+
+
+def require_admin(user: dict):
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Admin access required")
 
 
 # ---------------- Auth Endpoints ----------------
@@ -258,6 +341,8 @@ def _lead_doc_to_out(d: dict) -> dict:
 async def list_leads(stage: Optional[str] = None, q: Optional[str] = None,
                      user=Depends(get_current_user)):
     query = {}
+    if user.get("role") != "admin":
+        query["owner_id"] = user["id"]
     if stage and stage in PIPELINE_STAGES:
         query["stage"] = stage
     if q:
@@ -275,9 +360,10 @@ async def list_leads(stage: Optional[str] = None, q: Optional[str] = None,
 async def create_lead(payload: LeadIn, user=Depends(get_current_user)):
     lead_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
+    owner_id, owner_name = await _assign_owner(user)
     doc = {
         "id": lead_id, **payload.model_dump(),
-        "stage": "new", "owner_id": user["id"], "owner_name": user["name"],
+        "stage": "new", "owner_id": owner_id, "owner_name": owner_name,
         "created_at": now, "updated_at": now, "last_activity_at": now,
     }
     await db.leads.insert_one(doc)
@@ -359,8 +445,10 @@ async def bulk_import(file: UploadFile = File(...), user=Depends(get_current_use
     if "name" not in df.columns or "phone" not in df.columns:
         raise HTTPException(400, "File must contain at least 'name' and 'phone' columns")
 
-    created, skipped, errors = 0, 0, []
+    created, skipped, duplicates, errors = 0, 0, 0, []
     now = datetime.now(timezone.utc).isoformat()
+    existing_phones = set(await db.leads.distinct("phone"))
+    seen_phones = set()
     docs = []
     for idx, row in df.iterrows():
         try:
@@ -369,6 +457,10 @@ async def bulk_import(file: UploadFile = File(...), user=Depends(get_current_use
             if not nm or not ph or nm.lower() == "nan" or ph.lower() == "nan":
                 skipped += 1
                 continue
+            if ph in existing_phones or ph in seen_phones:
+                duplicates += 1
+                continue
+            seen_phones.add(ph)
             lang = str(row.get("language", "english")).strip().lower() or "english"
             if lang not in VALID_LANGS:
                 lang = "english"
@@ -386,6 +478,7 @@ async def bulk_import(file: UploadFile = File(...), user=Depends(get_current_use
                 s = str(v).strip()
                 return "" if s.lower() == "nan" else s
 
+            owner_id, owner_name = await _assign_owner(user)
             doc = {
                 "id": str(uuid.uuid4()), "name": nm, "phone": ph,
                 "email": _cell("email") or None,
@@ -394,7 +487,7 @@ async def bulk_import(file: UploadFile = File(...), user=Depends(get_current_use
                 "language": lang, "priority": prio,
                 "notes": _cell("notes") or None,
                 "stage": stage,
-                "owner_id": user["id"], "owner_name": user["name"],
+                "owner_id": owner_id, "owner_name": owner_name,
                 "created_at": now, "updated_at": now, "last_activity_at": now,
             }
             docs.append(doc)
@@ -413,7 +506,7 @@ async def bulk_import(file: UploadFile = File(...), user=Depends(get_current_use
             await db.activities.insert_many(acts)
         created = len(docs)
 
-    return {"created": created, "skipped": skipped, "errors": errors, "total_rows": int(len(df))}
+    return {"created": created, "skipped": skipped, "duplicates": duplicates, "errors": errors, "total_rows": int(len(df))}
 
 
 @api_router.get("/leads/{lead_id}")
@@ -496,7 +589,7 @@ async def add_note(lead_id: str, payload: NoteIn, user=Depends(get_current_user)
 # ---------------- WhatsApp (Mock) ----------------
 @api_router.get("/whatsapp/templates")
 async def list_templates(user=Depends(get_current_user)):
-    return WHATSAPP_TEMPLATES
+    return await get_templates()
 
 
 @api_router.get("/leads/{lead_id}/messages")
@@ -543,8 +636,9 @@ async def trigger_call(lead_id: str, payload: CallIn, user=Depends(get_current_u
     if not lead:
         raise HTTPException(404, "Lead not found")
     now = datetime.now(timezone.utc).isoformat()
-    lang = payload.language if payload.language in AI_CALL_SCRIPTS else "english"
-    opening = AI_CALL_SCRIPTS[lang].replace("{name}", lead.get("name", "")).replace("{course}", lead.get("course", "the course"))
+    scripts = await get_call_scripts()
+    lang = payload.language if payload.language in scripts else "english"
+    opening = scripts[lang].replace("{name}", lead.get("name", "")).replace("{course}", lead.get("course", "the course"))
     transcript = [{"speaker": "AI", "text": opening}]
     for line in AI_CALL_RESPONSES:
         speaker, text = line.split(":", 1)
@@ -571,7 +665,8 @@ async def trigger_call(lead_id: str, payload: CallIn, user=Depends(get_current_u
 async def bulk_whatsapp(payload: BulkWhatsAppIn, user=Depends(get_current_user)):
     if payload.stage not in PIPELINE_STAGES:
         raise HTTPException(400, "Invalid stage")
-    template = next((t for t in WHATSAPP_TEMPLATES if t["id"] == payload.template_id), None)
+    templates = await get_templates()
+    template = next((t for t in templates if t["id"] == payload.template_id), None)
     if not template:
         raise HTTPException(400, "Invalid template")
     leads = await db.leads.find({"stage": payload.stage}).to_list(5000)
@@ -595,12 +690,13 @@ async def bulk_whatsapp(payload: BulkWhatsAppIn, user=Depends(get_current_user))
 async def bulk_calls(payload: BulkCallsIn, user=Depends(get_current_user)):
     if payload.stage not in PIPELINE_STAGES:
         raise HTTPException(400, "Invalid stage")
-    lang = payload.language if payload.language in AI_CALL_SCRIPTS else "english"
+    scripts = await get_call_scripts()
+    lang = payload.language if payload.language in scripts else "english"
     leads = await db.leads.find({"stage": payload.stage}).to_list(5000)
     now = datetime.now(timezone.utc).isoformat()
     called = 0
     for lead in leads:
-        opening = AI_CALL_SCRIPTS[lang].replace("{name}", lead.get("name", "")).replace("{course}", lead.get("course", "the course"))
+        opening = scripts[lang].replace("{name}", lead.get("name", "")).replace("{course}", lead.get("course", "the course"))
         transcript = [{"speaker": "AI", "text": opening}]
         for line in AI_CALL_RESPONSES:
             speaker, text = line.split(":", 1)
@@ -621,7 +717,8 @@ async def bulk_calls(payload: BulkCallsIn, user=Depends(get_current_user)):
 # ---------------- Tasks (Follow-ups) ----------------
 @api_router.get("/tasks")
 async def list_tasks(user=Depends(get_current_user)):
-    docs = await db.tasks.find({}).sort("due_date", 1).to_list(500)
+    query = {} if user.get("role") == "admin" else {"owner_id": user["id"]}
+    docs = await db.tasks.find(query).sort("due_date", 1).to_list(500)
     for d in docs:
         d.pop("_id", None)
     return docs
@@ -629,9 +726,14 @@ async def list_tasks(user=Depends(get_current_user)):
 
 @api_router.post("/tasks")
 async def create_task(payload: TaskIn, user=Depends(get_current_user)):
+    lead_name = None
+    if payload.lead_id:
+        lead = await db.leads.find_one({"id": payload.lead_id})
+        lead_name = lead.get("name") if lead else None
     doc = {
         "id": str(uuid.uuid4()), **payload.model_dump(),
-        "done": False, "owner_id": user["id"],
+        "lead_name": lead_name,
+        "done": False, "owner_id": user["id"], "owner_name": user["name"],
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.tasks.insert_one(doc)
@@ -655,6 +757,163 @@ async def delete_task(task_id: str, user=Depends(get_current_user)):
     if r.deleted_count == 0:
         raise HTTPException(404, "Task not found")
     return {"ok": True}
+
+
+# ---------------- Team / Users (Admin) ----------------
+@api_router.get("/users")
+async def list_users(user=Depends(get_current_user)):
+    require_admin(user)
+    docs = await db.users.find({}).sort("created_at", 1).to_list(500)
+    return [{"id": d["id"], "email": d["email"], "name": d["name"],
+             "role": d.get("role", "counsellor")} for d in docs]
+
+
+@api_router.post("/users")
+async def create_user(payload: UserCreate, user=Depends(get_current_user)):
+    require_admin(user)
+    email = payload.email.lower()
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(400, "Email already registered")
+    role = payload.role if payload.role in ("admin", "counsellor") else "counsellor"
+    uid = str(uuid.uuid4())
+    await db.users.insert_one({
+        "id": uid, "email": email, "name": payload.name,
+        "password_hash": hash_password(payload.password), "role": role,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"id": uid, "email": email, "name": payload.name, "role": role}
+
+
+@api_router.delete("/users/{user_id}")
+async def delete_user(user_id: str, user=Depends(get_current_user)):
+    require_admin(user)
+    if user_id == user["id"]:
+        raise HTTPException(400, "You cannot delete your own account")
+    r = await db.users.delete_one({"id": user_id})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "User not found")
+    return {"ok": True}
+
+
+@api_router.post("/leads/{lead_id}/assign")
+async def assign_lead(lead_id: str, payload: AssignIn, user=Depends(get_current_user)):
+    require_admin(user)
+    owner = await db.users.find_one({"id": payload.owner_id})
+    if not owner:
+        raise HTTPException(404, "User not found")
+    res = await db.leads.find_one_and_update(
+        {"id": lead_id},
+        {"$set": {"owner_id": owner["id"], "owner_name": owner["name"],
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        return_document=True,
+    )
+    if not res:
+        raise HTTPException(404, "Lead not found")
+    await _add_activity(lead_id, "assigned", f"Lead assigned to {owner['name']}", user)
+    return _lead_doc_to_out(res)
+
+
+# ---------------- Email Channel (Resend) ----------------
+@api_router.get("/leads/{lead_id}/emails")
+async def list_emails(lead_id: str, user=Depends(get_current_user)):
+    docs = await db.emails.find({"lead_id": lead_id}).sort("created_at", -1).to_list(500)
+    for d in docs:
+        d.pop("_id", None)
+    return docs
+
+
+@api_router.post("/leads/{lead_id}/email")
+async def send_lead_email(lead_id: str, payload: EmailIn, user=Depends(get_current_user)):
+    lead = await db.leads.find_one({"id": lead_id})
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    if not lead.get("email"):
+        raise HTTPException(400, "This lead has no email address")
+    api_key = os.environ.get("RESEND_API_KEY")
+    if not api_key:
+        raise HTTPException(400, "Email not configured. Add RESEND_API_KEY to backend .env")
+    sender = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
+    html = payload.body.replace("{name}", lead.get("name", "")).replace("\n", "<br>")
+    resend.api_key = api_key
+    params = {"from": sender, "to": [lead["email"]], "subject": payload.subject, "html": html}
+    try:
+        result = await asyncio.to_thread(resend.Emails.send, params)
+    except Exception as e:
+        logger.error(f"Resend send failed: {e}")
+        raise HTTPException(502, f"Email send failed: {e}")
+    now = datetime.now(timezone.utc).isoformat()
+    rec = {
+        "id": str(uuid.uuid4()), "lead_id": lead_id, "to": lead["email"],
+        "subject": payload.subject, "body": payload.body,
+        "provider_id": (result or {}).get("id"), "status": "sent", "created_at": now,
+    }
+    await db.emails.insert_one(dict(rec))
+    await _add_activity(lead_id, "email_sent", f"Email: {payload.subject[:60]}", user)
+    return {"ok": True, "id": rec["id"]}
+
+
+# ---------------- Settings / Config ----------------
+@api_router.get("/integrations/status")
+async def integrations_status(user=Depends(get_current_user)):
+    def has(*keys):
+        return all(bool(os.environ.get(k)) for k in keys)
+    return {
+        "whatsapp": has("WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_ACCESS_TOKEN"),
+        "meta_verify": has("META_VERIFY_TOKEN"),
+        "facebook": has("FB_PAGE_ID", "FB_PAGE_ACCESS_TOKEN"),
+        "instagram": has("IG_BUSINESS_ACCOUNT_ID", "FB_PAGE_ACCESS_TOKEN"),
+        "email": has("RESEND_API_KEY"),
+        "llm": has("EMERGENT_LLM_KEY"),
+    }
+
+
+@api_router.get("/config/content")
+async def get_content_config(user=Depends(get_current_user)):
+    return await get_config("content_config", DEFAULT_CONTENT_CONFIG)
+
+
+@api_router.put("/config/content")
+async def update_content_config(payload: ContentConfigIn, user=Depends(get_current_user)):
+    require_admin(user)
+    cur = await get_config("content_config", DEFAULT_CONTENT_CONFIG)
+    val = payload.model_dump()
+    val["interval_hours"] = max(1, int(val.get("interval_hours", 1)))
+    if not val.get("search_sources"):
+        val["search_sources"] = DEFAULT_NEWS_SOURCES
+    if not val.get("search_keywords"):
+        val["search_keywords"] = DEFAULT_CONTENT_CONFIG["search_keywords"]
+    val["last_run"] = cur.get("last_run")
+    await set_config("content_config", val)
+    return val
+
+
+@api_router.get("/config/templates")
+async def get_templates_config(user=Depends(get_current_user)):
+    return {"whatsapp_templates": await get_templates(), "call_scripts": await get_call_scripts()}
+
+
+@api_router.put("/config/templates")
+async def update_templates_config(payload: TemplatesConfigIn, user=Depends(get_current_user)):
+    require_admin(user)
+    if payload.whatsapp_templates:
+        await set_config("whatsapp_templates", payload.whatsapp_templates)
+    if payload.call_scripts:
+        await set_config("call_scripts", payload.call_scripts)
+    return {"whatsapp_templates": await get_templates(), "call_scripts": await get_call_scripts()}
+
+
+@api_router.get("/config/team")
+async def get_team_config(user=Depends(get_current_user)):
+    return await _get_team_settings()
+
+
+@api_router.put("/config/team")
+async def update_team_config(payload: TeamSettingsIn, user=Depends(get_current_user)):
+    require_admin(user)
+    cur = await _get_team_settings()
+    cur["round_robin"] = payload.round_robin
+    await set_config("team_settings", cur)
+    return cur
 
 
 # ---------------- Analytics ----------------
@@ -704,6 +963,13 @@ async def on_startup():
     await db.messages.create_index("lead_id")
     await db.calls.create_index("lead_id")
     await db.activities.create_index("lead_id")
+    await db.app_config.create_index("key", unique=True)
+
+    try:
+        if hasattr(social_router, "start_scheduler"):
+            social_router.start_scheduler()
+    except Exception as e:
+        logger.error(f"Scheduler start failed: {e}")
 
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@leadflow.com").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
@@ -739,62 +1005,8 @@ from meta_integrations import build_meta_router
 app.include_router(build_meta_router(db, get_current_user, _add_activity))
 
 from social_posts import build_social_router
-app.include_router(build_social_router(db, get_current_user))
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ---------------- Startup ----------------
-@app.on_event("startup")
-async def on_startup():
-    await db.users.create_index("email", unique=True)
-    await db.leads.create_index("stage")
-    await db.leads.create_index("created_at")
-    await db.messages.create_index("lead_id")
-    await db.calls.create_index("lead_id")
-    await db.activities.create_index("lead_id")
-
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@leadflow.com").lower()
-    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
-    existing = await db.users.find_one({"email": admin_email})
-    if not existing:
-        await db.users.insert_one({
-            "id": str(uuid.uuid4()), "email": admin_email, "name": "Admin",
-            "password_hash": hash_password(admin_password), "role": "admin",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-        logger.info(f"Seeded admin: {admin_email}")
-    elif not verify_password(admin_password, existing["password_hash"]):
-        await db.users.update_one(
-            {"email": admin_email},
-            {"$set": {"password_hash": hash_password(admin_password)}},
-        )
-
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
-
-
-# Health
-@api_router.get("/")
-async def root():
-    return {"app": "LeadFlow CRM", "ok": True}
-
-
-app.include_router(api_router)
-
-from meta_integrations import build_meta_router
-app.include_router(build_meta_router(db, get_current_user, _add_activity))
-
-from social_posts import build_social_router
-app.include_router(build_social_router(db, get_current_user))
+social_router = build_social_router(db, get_current_user)
+app.include_router(social_router)
 
 app.add_middleware(
     CORSMiddleware,

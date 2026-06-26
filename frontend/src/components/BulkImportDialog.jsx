@@ -120,6 +120,9 @@ export default function BulkImportDialog({ onDone }) {
               {result.skipped > 0 && (
                 <div className="text-zinc-600 ml-6">Skipped {result.skipped} row(s) — missing name or phone.</div>
               )}
+              {result.duplicates > 0 && (
+                <div className="text-amber-700 ml-6">Skipped {result.duplicates} duplicate(s) — phone already exists.</div>
+              )}
               {result.errors?.length > 0 && (
                 <div className="ml-6">
                   <div className="flex items-center gap-1.5 text-rose-700"><AlertCircle className="w-4 h-4" /> {result.errors.length} error(s)</div>

@@ -9,8 +9,11 @@ import { Textarea } from "@/components/ui/textarea";
 import StageBadge from "@/components/StageBadge";
 import WhatsAppPanel from "@/components/WhatsAppPanel";
 import AICallerPanel from "@/components/AICallerPanel";
+import EmailPanel from "@/components/EmailPanel";
+import ScheduleFollowupDialog from "@/components/ScheduleFollowupDialog";
+import { useAuth } from "@/context/AuthContext";
 import { toast } from "sonner";
-import { ArrowLeft, Mail, Phone, BookOpen, Globe, Flag, Trash2, Sparkles, Flame } from "lucide-react";
+import { ArrowLeft, Mail, Phone, BookOpen, Globe, Flag, Trash2, Sparkles, Flame, UserCheck } from "lucide-react";
 
 const activityIcon = {
   lead_created: "🆕",
@@ -18,14 +21,18 @@ const activityIcon = {
   whatsapp_sent: "💬",
   ai_call: "📞",
   note: "📝",
+  assigned: "👤",
+  email_sent: "✉️",
 };
 
 export default function LeadDetail() {
   const { id } = useParams();
   const nav = useNavigate();
+  const { user } = useAuth();
   const [lead, setLead] = useState(null);
   const [activities, setActivities] = useState([]);
   const [note, setNote] = useState("");
+  const [users, setUsers] = useState([]);
 
   const loadLead = async () => {
     const { data } = await api.get(`/leads/${id}`);
@@ -37,6 +44,20 @@ export default function LeadDetail() {
   };
 
   useEffect(() => { loadLead(); loadActs(); }, [id]);
+
+  useEffect(() => {
+    if (user?.role === "admin") {
+      api.get("/users").then(({ data }) => setUsers(data)).catch(() => {});
+    }
+  }, [user]);
+
+  const assign = async (ownerId) => {
+    try {
+      const { data } = await api.post(`/leads/${id}/assign`, { owner_id: ownerId });
+      setLead(data); loadActs();
+      toast.success(`Assigned to ${data.owner_name}`);
+    } catch (e) { toast.error(formatApiError(e.response?.data?.detail)); }
+  };
 
   const changeStage = async (s) => {
     try {
@@ -97,15 +118,25 @@ export default function LeadDetail() {
             {lead.course && <span className="inline-flex items-center gap-1.5"><BookOpen className="w-4 h-4" /> {lead.course}</span>}
             <span className="inline-flex items-center gap-1.5 capitalize"><Globe className="w-4 h-4" /> {lead.language}</span>
             <span className="inline-flex items-center gap-1.5 capitalize"><Flag className="w-4 h-4" /> {lead.source}</span>
+            {lead.owner_name && <span className="inline-flex items-center gap-1.5" data-testid="lead-owner"><UserCheck className="w-4 h-4" /> {lead.owner_name}</span>}
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap justify-end">
           <Select value={lead.stage} onValueChange={changeStage}>
-            <SelectTrigger className="w-48" data-testid="change-stage-select"><SelectValue /></SelectTrigger>
+            <SelectTrigger className="w-44" data-testid="change-stage-select"><SelectValue /></SelectTrigger>
             <SelectContent>
               {STAGES.map((s) => <SelectItem key={s.key} value={s.key}>{s.label}</SelectItem>)}
             </SelectContent>
           </Select>
+          {user?.role === "admin" && (
+            <Select value={lead.owner_id || ""} onValueChange={assign}>
+              <SelectTrigger className="w-44" data-testid="assign-owner-select"><SelectValue placeholder="Assign to…" /></SelectTrigger>
+              <SelectContent>
+                {users.map((u) => <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          )}
+          <ScheduleFollowupDialog lead={lead} onDone={loadActs} />
           <Button variant="outline" onClick={summarize} data-testid="summarize-btn">
             <Sparkles className="w-4 h-4 mr-1" /> AI Summary
           </Button>
@@ -132,6 +163,7 @@ export default function LeadDetail() {
       <Tabs defaultValue="conversations" className="w-full">
         <TabsList data-testid="lead-tabs">
           <TabsTrigger value="conversations" data-testid="tab-conversations">Conversations</TabsTrigger>
+          <TabsTrigger value="email" data-testid="tab-email">Email</TabsTrigger>
           <TabsTrigger value="activity" data-testid="tab-activity">Activity ({activities.length})</TabsTrigger>
           <TabsTrigger value="notes" data-testid="tab-notes">Notes</TabsTrigger>
         </TabsList>
@@ -141,6 +173,10 @@ export default function LeadDetail() {
             <WhatsAppPanel lead={lead} onActivity={() => { loadActs(); loadLead(); }} />
             <AICallerPanel lead={lead} onActivity={() => { loadActs(); loadLead(); }} />
           </div>
+        </TabsContent>
+
+        <TabsContent value="email" className="mt-4">
+          <EmailPanel lead={lead} onActivity={() => { loadActs(); loadLead(); }} />
         </TabsContent>
 
         <TabsContent value="activity" className="mt-4">
