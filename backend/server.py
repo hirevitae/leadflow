@@ -686,40 +686,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-_overview(user=Depends(get_current_user)):
-    total = await db.leads.count_documents({})
-    stages = {}
-    for s in PIPELINE_STAGES:
-        stages[s] = await db.leads.count_documents({"stage": s})
-    enrolled = stages["enrolled"]
-    lost = stages["lost"]
-    closed = enrolled + lost
-    conv_rate = round((enrolled / total) * 100, 1) if total else 0.0
-    win_rate = round((enrolled / closed) * 100, 1) if closed else 0.0
-
-    # source breakdown
-    src_pipeline = [{"$group": {"_id": "$source", "count": {"$sum": 1}}}]
-    sources_raw = await db.leads.aggregate(src_pipeline).to_list(100)
-    sources = [{"source": (s["_id"] or "unknown"), "count": s["count"]} for s in sources_raw]
-
-    # activity counts
-    msg_count = await db.messages.count_documents({})
-    call_count = await db.calls.count_documents({})
-
-    # daily new leads (last 14 days)
-    daily = []
-    today = datetime.now(timezone.utc).date()
-    for i in range(13, -1, -1):
-        day = today - timedelta(days=i)
-        prefix = day.isoformat()
-        c = await db.leads.count_documents({"created_at": {"$regex": f"^{prefix}"}})
-        daily.append({"date": prefix, "count": c})
-
-    return {
-        "total_leads": total, "stages": stages, "conv_rate": conv_rate,
-        "win_rate": win_rate, "sources": sources,
-        "whatsapp_sent": msg_count, "ai_calls": call_count, "daily": daily,
-    }
 
 
 # ---------------- Startup ----------------

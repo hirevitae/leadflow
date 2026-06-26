@@ -1,0 +1,39 @@
+{
+  "summary": "Backend boots and core endpoints work (root, login, leads list, analytics overview). However the two newly-added AI endpoints (refine-message, summarize) are MISSING from /app/backend/server.py and return 404. Frontend buttons exist and target these missing endpoints so the AI flows are broken end-to-end. Lead sort already uses interest_score DESC then created_at DESC in code. A duplicate GET '/' route also remains at lines 669 and 724.",
+  "tested_scope": ["backend", "auth", "integration"],
+  "passed": [
+    "GET /api/ -> 200",
+    "POST /api/auth/login admin -> 200, token returned (field name is 'token')",
+    "GET /api/leads -> 200, returns 7 leads, sorted query uses interest_score DESC, created_at DESC",
+    "GET /api/analytics/overview -> 200 with expected keys (total_leads, stages, sources, daily, whatsapp_sent, ai_calls)",
+    "Frontend code verified: WhatsAppPanel has data-testid=wa-refine-btn; LeadDetail has data-testid=summarize-btn and data-testid=lead-summary-card; Leads.jsx renders 'Interest' column with interest_score badge"
+  ],
+  "failed": [
+    {
+      "area": "backend/AI",
+      "issue": "POST /api/leads/{lead_id}/refine-message returns 404 - endpoint not registered in server.py",
+      "evidence": "curl -X POST .../api/leads/<id>/refine-message -> 404 {\"detail\":\"Not Found\"}. grep -n 'refine' /app/backend/server.py returns no matches. Only 'interest_score' appears once (in the sort on line 260).",
+      "priority": "HIGH"
+    },
+    {
+      "area": "backend/AI",
+      "issue": "POST /api/leads/{lead_id}/summarize returns 404 - endpoint not registered. Lead doc is not updated with interest_score/next_step/ai_summary (all None after attempted call).",
+      "evidence": "curl -X POST .../api/leads/<id>/summarize -> 404. Re-fetched lead still shows interest_score=None, next_step=None, ai_summary=None. grep 'summarize' server.py -> no matches.",
+      "priority": "HIGH"
+    },
+    {
+      "area": "backend/routing",
+      "issue": "Duplicate @api_router.get('/') routes at lines 669 and 724 of server.py - likely leftover from the stray-block cleanup.",
+      "evidence": "grep -n '@api_router' shows two GET '/' registrations.",
+      "priority": "MEDIUM"
+    }
+  ],
+  "action_items": [
+    "Re-add the refine_message and summarize_lead endpoints in /app/backend/server.py (they appear to have been deleted along with the stray analytics block). They must: (a) be decorated with @api_router.post on /leads/{lead_id}/refine-message and /leads/{lead_id}/summarize, (b) use the Emergent LLM key, (c) for summarize: persist interest_score, next_step, ai_summary onto the lead document, (d) return JSON shape the frontend expects (refine -> {body}; summarize -> {summary, interest_score, next_step}).",
+    "Remove the duplicate @api_router.get('/') at line 724 of server.py.",
+    "After fix, retest both AI flows end-to-end and verify GET /api/leads orders by populated interest_score DESC."
+  ],
+  "success_rate": {"backend": "57% (4/7 critical checks)", "frontend": "not exercised via Playwright due to backend blocker; code-level checks pass"},
+  "retest_needed": true,
+  "full_testing_deferred": true
+}
