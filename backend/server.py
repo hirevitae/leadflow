@@ -257,7 +257,7 @@ async def list_leads(stage: Optional[str] = None, q: Optional[str] = None,
             {"email": {"$regex": q, "$options": "i"}},
             {"course": {"$regex": q, "$options": "i"}},
         ]
-    leads = await db.leads.find(query).sort("created_at", -1).to_list(1000)
+    leads = await db.leads.find(query).sort([("interest_score", -1), ("created_at", -1)]).to_list(1000)
     return [_lead_doc_to_out(d) for d in leads]
 
 
@@ -598,6 +598,95 @@ async def delete_task(task_id: str, user=Depends(get_current_user)):
 # ---------------- Analytics ----------------
 @api_router.get("/analytics/overview")
 async def analytics_overview(user=Depends(get_current_user)):
+    total = await db.leads.count_documents({})
+    stages = {}
+    for s in PIPELINE_STAGES:
+        stages[s] = await db.leads.count_documents({"stage": s})
+    enrolled = stages["enrolled"]
+    lost = stages["lost"]
+    closed = enrolled + lost
+    conv_rate = round((enrolled / total) * 100, 1) if total else 0.0
+    win_rate = round((enrolled / closed) * 100, 1) if closed else 0.0
+
+    # source breakdown
+    src_pipeline = [{"$group": {"_id": "$source", "count": {"$sum": 1}}}]
+    sources_raw = await db.leads.aggregate(src_pipeline).to_list(100)
+    sources = [{"source": (s["_id"] or "unknown"), "count": s["count"]} for s in sources_raw]
+
+    # activity counts
+    msg_count = await db.messages.count_documents({})
+    call_count = await db.calls.count_documents({})
+
+    # daily new leads (last 14 days)
+    daily = []
+    today = datetime.now(timezone.utc).date()
+    for i in range(13, -1, -1):
+        day = today - timedelta(days=i)
+        prefix = day.isoformat()
+        c = await db.leads.count_documents({"created_at": {"$regex": f"^{prefix}"}})
+        daily.append({"date": prefix, "count": c})
+
+    return {
+        "total_leads": total, "stages": stages, "conv_rate": conv_rate,
+        "win_rate": win_rate, "sources": sources,
+        "whatsapp_sent": msg_count, "ai_calls": call_count, "daily": daily,
+    }
+
+
+# ---------------- Startup ----------------
+@app.on_event("startup")
+async def on_startup():
+    await db.users.create_index("email", unique=True)
+    await db.leads.create_index("stage")
+    await db.leads.create_index("created_at")
+    await db.messages.create_index("lead_id")
+    await db.calls.create_index("lead_id")
+    await db.activities.create_index("lead_id")
+
+    admin_email = os.environ.get("ADMIN_EMAIL", "admin@leadflow.com").lower()
+    admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
+    existing = await db.users.find_one({"email": admin_email})
+    if not existing:
+        await db.users.insert_one({
+            "id": str(uuid.uuid4()), "email": admin_email, "name": "Admin",
+            "password_hash": hash_password(admin_password), "role": "admin",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info(f"Seeded admin: {admin_email}")
+    elif not verify_password(admin_password, existing["password_hash"]):
+        await db.users.update_one(
+            {"email": admin_email},
+            {"$set": {"password_hash": hash_password(admin_password)}},
+        )
+
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    client.close()
+
+
+# Health
+@api_router.get("/")
+async def root():
+    return {"app": "LeadFlow CRM", "ok": True}
+
+
+app.include_router(api_router)
+
+from meta_integrations import build_meta_router
+app.include_router(build_meta_router(db, get_current_user, _add_activity))
+
+from social_posts import build_social_router
+app.include_router(build_social_router(db, get_current_user))
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+_overview(user=Depends(get_current_user)):
     total = await db.leads.count_documents({})
     stages = {}
     for s in PIPELINE_STAGES:

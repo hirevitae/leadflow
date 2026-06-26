@@ -83,12 +83,13 @@ export default function Leads() {
                 <TableHead>Source</TableHead>
                 <TableHead>Language</TableHead>
                 <TableHead>Stage</TableHead>
+                <TableHead>Interest</TableHead>
                 <TableHead>Added</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {leads.length === 0 && (
-                <TableRow><TableCell colSpan={7} className="text-center text-zinc-500 py-12">No leads match your filters.</TableCell></TableRow>
+                <TableRow><TableCell colSpan={8} className="text-center text-zinc-500 py-12">No leads match your filters.</TableCell></TableRow>
               )}
               {leads.map((l) => (
                 <TableRow key={l.id} className="cursor-pointer hover:bg-zinc-50" data-testid={`lead-row-${l.id}`}>
@@ -100,6 +101,15 @@ export default function Leads() {
                   <TableCell className="capitalize">{l.source}</TableCell>
                   <TableCell className="capitalize">{l.language}</TableCell>
                   <TableCell><StageBadge stage={l.stage} /></TableCell>
+                  <TableCell>
+                    {l.interest_score != null ? (
+                      <span className={`mono text-sm px-2 py-0.5 rounded ${
+                        l.interest_score >= 70 ? "bg-emerald-50 text-emerald-700" :
+                        l.interest_score >= 40 ? "bg-amber-50 text-amber-700" :
+                        "bg-zinc-100 text-zinc-500"
+                      }`}>{l.interest_score}</span>
+                    ) : <span className="text-zinc-400 text-xs">—</span>}
+                  </TableCell>
                   <TableCell className="text-sm text-zinc-500">{new Date(l.created_at).toLocaleDateString()}</TableCell>
                 </TableRow>
               ))}

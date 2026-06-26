@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Send, MessageCircle } from "lucide-react";
+import { Send, MessageCircle, Sparkles } from "lucide-react";
 
 export default function WhatsAppPanel({ lead, onActivity }) {
   const [templates, setTemplates] = useState([]);
@@ -12,6 +12,17 @@ export default function WhatsAppPanel({ lead, onActivity }) {
   const [body, setBody] = useState("");
   const [templateId, setTemplateId] = useState("custom");
   const [sending, setSending] = useState(false);
+  const [refining, setRefining] = useState(false);
+
+  const refine = async () => {
+    if (!body.trim()) return;
+    setRefining(true);
+    try {
+      const { data } = await api.post(`/leads/${lead.id}/refine-message`, { body });
+      setBody(data.body); toast.success("Message polished");
+    } catch { toast.error("Refine failed"); }
+    finally { setRefining(false); }
+  };
 
   useEffect(() => {
     api.get("/whatsapp/templates").then((r) => setTemplates(r.data)).catch(() => {});
@@ -89,7 +100,10 @@ export default function WhatsAppPanel({ lead, onActivity }) {
           placeholder="Type a message… use {name} and {course} as placeholders"
           data-testid="wa-body-input"
         />
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={refine} disabled={refining || !body.trim()} data-testid="wa-refine-btn">
+            <Sparkles className="w-4 h-4 mr-1.5" />{refining ? "Polishing…" : "Refine with AI"}
+          </Button>
           <Button onClick={send} disabled={sending || !body.trim()} className="bg-emerald-600 hover:bg-emerald-700" data-testid="wa-send-btn">
             <Send className="w-4 h-4 mr-1.5" />{sending ? "Sending…" : "Send"}
           </Button>

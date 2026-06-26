@@ -10,7 +10,7 @@ import StageBadge from "@/components/StageBadge";
 import WhatsAppPanel from "@/components/WhatsAppPanel";
 import AICallerPanel from "@/components/AICallerPanel";
 import { toast } from "sonner";
-import { ArrowLeft, Mail, Phone, BookOpen, Globe, Flag, Trash2 } from "lucide-react";
+import { ArrowLeft, Mail, Phone, BookOpen, Globe, Flag, Trash2, Sparkles, Flame } from "lucide-react";
 
 const activityIcon = {
   lead_created: "🆕",
@@ -63,6 +63,14 @@ export default function LeadDetail() {
     nav("/leads");
   };
 
+  const summarize = async () => {
+    try {
+      const { data } = await api.post(`/leads/${id}/summarize`);
+      toast.success(`Interest score: ${data.interest_score}/100`);
+      loadLead();
+    } catch { toast.error("Summary failed"); }
+  };
+
   if (!lead) return <div className="p-8 text-zinc-500">Loading…</div>;
 
   return (
@@ -98,11 +106,28 @@ export default function LeadDetail() {
               {STAGES.map((s) => <SelectItem key={s.key} value={s.key}>{s.label}</SelectItem>)}
             </SelectContent>
           </Select>
+          <Button variant="outline" onClick={summarize} data-testid="summarize-btn">
+            <Sparkles className="w-4 h-4 mr-1" /> AI Summary
+          </Button>
           <Button variant="outline" onClick={deleteLead} data-testid="delete-lead-btn">
             <Trash2 className="w-4 h-4 mr-1" /> Delete
           </Button>
         </div>
       </div>
+
+      {lead.convo_summary && (
+        <div className="mb-4 p-4 rounded-md border border-amber-200 bg-amber-50/60 flex items-start gap-3" data-testid="lead-summary-card">
+          <Flame className="w-5 h-5 text-amber-600 mt-0.5" />
+          <div className="flex-1">
+            <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-amber-700 font-semibold">
+              Interest score
+              <span className="px-2 py-0.5 rounded bg-amber-200 text-amber-900 mono">{lead.interest_score ?? 0}/100</span>
+            </div>
+            <div className="text-sm text-zinc-800 mt-1">{lead.convo_summary}</div>
+            {lead.next_step && <div className="text-xs text-zinc-600 mt-1"><b>Next:</b> {lead.next_step}</div>}
+          </div>
+        </div>
+      )}
 
       <Tabs defaultValue="conversations" className="w-full">
         <TabsList data-testid="lead-tabs">
