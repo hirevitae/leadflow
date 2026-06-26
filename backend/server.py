@@ -153,6 +153,16 @@ class NoteIn(BaseModel):
     text: str
 
 
+class BulkWhatsAppIn(BaseModel):
+    stage: str
+    template_id: str
+
+
+class BulkCallsIn(BaseModel):
+    stage: str
+    language: str = "english"
+
+
 class TaskIn(BaseModel):
     title: str
     due_date: str  # ISO string
@@ -554,6 +564,58 @@ async def trigger_call(lead_id: str, payload: CallIn, user=Depends(get_current_u
         await db.leads.update_one({"id": lead_id}, {"$set": {"stage": "interested"}})
     call_doc.pop("_id", None)
     return call_doc
+
+
+# ---------------- Bulk Outreach ----------------
+@api_router.post("/bulk/whatsapp")
+async def bulk_whatsapp(payload: BulkWhatsAppIn, user=Depends(get_current_user)):
+    if payload.stage not in PIPELINE_STAGES:
+        raise HTTPException(400, "Invalid stage")
+    template = next((t for t in WHATSAPP_TEMPLATES if t["id"] == payload.template_id), None)
+    if not template:
+        raise HTTPException(400, "Invalid template")
+    leads = await db.leads.find({"stage": payload.stage}).to_list(5000)
+    now = datetime.now(timezone.utc).isoformat()
+    sent = 0
+    for lead in leads:
+        body = template["body"].replace("{name}", lead.get("name", "")).replace("{course}", lead.get("course", "your course"))
+        await db.messages.insert_one({
+            "id": str(uuid.uuid4()), "lead_id": lead["id"], "direction": "outbound",
+            "channel": "whatsapp", "body": body, "template": template["id"],
+            "status": "sent (mock)", "created_at": now,
+        })
+        await _add_activity(lead["id"], "whatsapp_sent", f"Bulk WhatsApp: {body[:60]}", user)
+        if lead.get("stage") == "new":
+            await db.leads.update_one({"id": lead["id"]}, {"$set": {"stage": "contacted"}})
+        sent += 1
+    return {"ok": True, "sent": sent, "stage": payload.stage}
+
+
+@api_router.post("/bulk/calls")
+async def bulk_calls(payload: BulkCallsIn, user=Depends(get_current_user)):
+    if payload.stage not in PIPELINE_STAGES:
+        raise HTTPException(400, "Invalid stage")
+    lang = payload.language if payload.language in AI_CALL_SCRIPTS else "english"
+    leads = await db.leads.find({"stage": payload.stage}).to_list(5000)
+    now = datetime.now(timezone.utc).isoformat()
+    called = 0
+    for lead in leads:
+        opening = AI_CALL_SCRIPTS[lang].replace("{name}", lead.get("name", "")).replace("{course}", lead.get("course", "the course"))
+        transcript = [{"speaker": "AI", "text": opening}]
+        for line in AI_CALL_RESPONSES:
+            speaker, text = line.split(":", 1)
+            transcript.append({"speaker": speaker.strip(), "text": text.strip()})
+        await db.calls.insert_one({
+            "id": str(uuid.uuid4()), "lead_id": lead["id"], "language": lang,
+            "status": "completed (mock)", "duration_sec": 92, "transcript": transcript,
+            "summary": f"AI follow-up call about {lead.get('course', 'the course')}. Customer asked about fees and demo class.",
+            "outcome": "interested", "created_at": now,
+        })
+        await _add_activity(lead["id"], "ai_call", f"Bulk AI call ({lang}) — outcome: interested", user)
+        if lead.get("stage") in ("new", "contacted"):
+            await db.leads.update_one({"id": lead["id"]}, {"$set": {"stage": "interested"}})
+        called += 1
+    return {"ok": True, "called": called, "stage": payload.stage}
 
 
 # ---------------- Tasks (Follow-ups) ----------------

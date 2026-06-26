@@ -29,6 +29,9 @@
 - Dashboard: 4 KPI cards + funnel chart + recent leads list.
 - Analytics: stage bar chart, source pie chart, daily new-leads line chart, conversion + win rate KPIs.
 
+## Implemented (Jun 2026)
+- **Bulk Outreach** (Leads page): single-stage-group bulk WhatsApp send (template-based) + bulk AI calls (EN/HI) via `POST /api/bulk/whatsapp` and `POST /api/bulk/calls`. Dialog shows live per-stage lead counts and a confirmation preview; auto-advances stages (mock send logic, consistent with per-lead flow).
+
 ## Backlog (prioritized)
 - **P0** — Real WhatsApp send (Twilio WhatsApp Business or Meta Cloud API).
 - **P0** — Real AI Caller (Twilio Voice + ElevenLabs or OpenAI Realtime, with multilingual TTS/STT).

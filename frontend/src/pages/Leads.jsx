@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import AddLeadDialog from "@/components/AddLeadDialog";
 import BulkImportDialog from "@/components/BulkImportDialog";
+import BulkOutreachDialog from "@/components/BulkOutreachDialog";
 import StageBadge from "@/components/StageBadge";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -43,6 +44,7 @@ export default function Leads() {
           <p className="text-sm text-zinc-500 mt-1">All your student leads with filters & search.</p>
         </div>
         <div className="flex items-center gap-2">
+          <BulkOutreachDialog onDone={load} />
           <BulkImportDialog onDone={load} />
           <AddLeadDialog onCreated={load} />
         </div>
