@@ -1,0 +1,93 @@
+{
+  "theme": "light",
+  "archetype": "Archetype 4 (Swiss & High-Contrast)",
+  "mood": "Professional, highly organized, trustworthy, objective",
+  "colors": {
+    "background": {
+      "primary": "#FFFFFF",
+      "secondary": "#FAFAFA",
+      "tertiary": "#F4F4F5"
+    },
+    "text": {
+      "primary": "#09090B",
+      "secondary": "#71717A",
+      "tertiary": "#A1A1AA"
+    },
+    "brand": {
+      "primary": "#2563EB",
+      "hover": "#1D4ED8",
+      "active": "#1E40AF"
+    },
+    "status": {
+      "success": "#16A34A",
+      "success_bg": "#DCFCE7",
+      "warning": "#EAB308",
+      "warning_bg": "#FEF9C3",
+      "danger": "#DC2626",
+      "danger_bg": "#FEE2E2",
+      "info": "#3B82F6",
+      "info_bg": "#DBEAFE"
+    },
+    "border": "#E4E4E7"
+  },
+  "typography": {
+    "font_families": {
+      "headings": "'Manrope', sans-serif",
+      "body": "'IBM Plex Sans', sans-serif",
+      "mono": "'JetBrains Mono', monospace"
+    },
+    "scales": {
+      "h1": "text-4xl tracking-tight leading-tight font-bold",
+      "h2": "text-2xl tracking-tight leading-snug font-semibold",
+      "h3": "text-xl tracking-tight font-medium",
+      "h4": "text-lg tracking-tight font-medium",
+      "body": "text-base leading-relaxed text-zinc-900",
+      "small": "text-sm leading-normal text-zinc-600",
+      "tiny": "text-xs tracking-wide uppercase font-semibold text-zinc-500"
+    }
+  },
+  "spacing_and_layout": {
+    "kanban_board": "Fluid drag-and-drop layout. Use flex-nowrap or grid with overflow-x-auto. Apply gap-4 between columns, gap-3 between cards. Columns should have min-width 300px.",
+    "dashboard_grid": "Grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6. Use dense, compact spacing inside widgets (p-4 or p-5) to optimize data display.",
+    "surface": "Flat solid surfaces. Avoid glassmorphism for heavy data apps to maintain clarity. Max border-radius: 8px (rounded-lg). Use 1px subtle border (border-zinc-200). Shadows should be minimal (shadow-sm only on hover)."
+  },
+  "components": {
+    "kanban_card": "Minimalist card design. Show lead name, interested course, priority indicator, and last contact date. Implement 'Contextual Pop' (Sheet or Dialog) on click to reveal deep details without leaving the board.",
+    "whatsapp_panel": "Split view interface: Contact info on the left, chat stream on the right. Chat bubbles should use distinct background colors (e.g., info_bg for sent, background.tertiary for received). Bottom composer with template dropdown.",
+    "ai_caller_panel": "Command-center aesthetic. Design a specific modal or dedicated panel for the AI caller. Incorporate a 'Call Active' pulse animation (green ring) and a live scrolling transcript feed. Include a toggle for Language (Hindi/English).",
+    "charts": "Use Recharts wrapped in Shadcn. Stick to monochromatic tones of the primary brand color or distinct status colors. Tooltips must be accessible and fast.",
+    "buttons": "Primary: Solid bg-blue-600 text-white hover:bg-blue-700 rounded-md. Secondary: outline border-zinc-200 text-zinc-900. Action buttons inside Kanban cards should be icon-only on hover to save space."
+  },
+  "animations": {
+    "hover": "Subtle transform scale-[1.02] transition-transform duration-200 for Kanban cards.",
+    "transitions": "Smooth opacity and transform on modal/sheet entrances.",
+    "ai_pulse": "animate-pulse for active call status indicator."
+  },
+  "accessibility": {
+    "contrast": "Ensure 4.5:1 ratio for all text on colored backgrounds, especially inside status tags (use dark text on light backgrounds for tags).",
+    "testing": "All interactive elements MUST have data-testid attributes (e.g., data-testid='kanban-column-new', data-testid='send-whatsapp-btn')."
+  },
+  "icons": {
+    "library": "lucide-react",
+    "usage": "Use stroke-width 1.5. Sizes: 16px (w-4 h-4) in buttons/tags and 20px-24px (w-5 h-5 / w-6 h-6) in sidebar navigation."
+  },
+  "images": {
+    "empty_state": "https://images.pexels.com/photos/8947698/pexels-photo-8947698.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+    "student_avatar_placeholder": "https://images.pexels.com/photos/36608621/pexels-photo-36608621.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940"
+  },
+  "tech_stack": {
+    "framework": "React.js",
+    "styling": "Tailwind CSS",
+    "ui_library": "shadcn/ui",
+    "charts": "Recharts"
+  },
+  "instructions_to_main_agent": [
+    "Build a CRM layout with a persistent left sidebar for navigation (Dashboard, Pipeline, Analytics) and a top header for search and user actions.",
+    "Implement the Kanban pipeline with robust state management. Columns: New, Contacted, Interested, Demo Scheduled, Negotiation, Enrolled, Lost. Keep headers sticky and show counts.",
+    "For the AI Caller feature, mock a detailed interface containing a live transcription area, a language selector (Hindi/English), script preview, and call status.",
+    "For the WhatsApp Composer, build a chat interface with a predefined message templates dropdown.",
+    "Use 'Manrope' from Google Fonts for headings and 'IBM Plex Sans' for body text. Add them to index.html or layout wrapper.",
+    "Ensure all Shadcn components (cards, buttons, dialogs) are stripped of excessive border radius (max 8px) and rely on 1px borders instead of drop shadows.",
+    "CRITICAL: Add 'data-testid' to every interactive element (buttons, tabs, cards, inputs) for testing purposes."
+  ]
+}
