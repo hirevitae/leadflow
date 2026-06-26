@@ -1,11 +1,12 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { LayoutDashboard, Users, KanbanSquare, BarChart3, Inbox, LogOut, GraduationCap } from "lucide-react";
+import { LayoutDashboard, Users, KanbanSquare, BarChart3, Inbox, Sparkles, LogOut, GraduationCap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, exact: true, testid: "nav-dashboard" },
   { to: "/inbox", label: "Inbox", icon: Inbox, testid: "nav-inbox" },
+  { to: "/content", label: "Content Studio", icon: Sparkles, testid: "nav-content" },
   { to: "/leads", label: "Leads", icon: Users, testid: "nav-leads" },
   { to: "/pipeline", label: "Pipeline", icon: KanbanSquare, testid: "nav-pipeline" },
   { to: "/analytics", label: "Analytics", icon: BarChart3, testid: "nav-analytics" },

@@ -676,6 +676,9 @@ app.include_router(api_router)
 from meta_integrations import build_meta_router
 app.include_router(build_meta_router(db, get_current_user, _add_activity))
 
+from social_posts import build_social_router
+app.include_router(build_social_router(db, get_current_user))
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,

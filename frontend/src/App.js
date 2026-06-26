@@ -10,6 +10,7 @@ import LeadDetail from "@/pages/LeadDetail";
 import Pipeline from "@/pages/Pipeline";
 import Analytics from "@/pages/Analytics";
 import Inbox from "@/pages/Inbox";
+import ContentStudio from "@/pages/ContentStudio";
 import { Toaster } from "@/components/ui/sonner";
 
 function App() {
@@ -37,6 +38,7 @@ function App() {
           />
           <Route path="/analytics" element={<ProtectedRoute><Layout><Analytics /></Layout></ProtectedRoute>} />
           <Route path="/inbox" element={<ProtectedRoute><Layout><Inbox /></Layout></ProtectedRoute>} />
+          <Route path="/content" element={<ProtectedRoute><Layout><ContentStudio /></Layout></ProtectedRoute>} />
         </Routes>
       </BrowserRouter>
       <Toaster richColors position="top-right" />
