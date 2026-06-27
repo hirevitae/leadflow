@@ -11,6 +11,7 @@ import bcrypt
 import jwt
 import asyncio
 import resend
+from meta_integrations import _send_whatsapp_text
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -607,10 +608,19 @@ async def send_message(lead_id: str, payload: MessageIn, user=Depends(get_curren
         raise HTTPException(404, "Lead not found")
     now = datetime.now(timezone.utc).isoformat()
     body = payload.body.replace("{name}", lead.get("name") or "").replace("{course}", lead.get("course") or "your course")
+    status, provider_id = "sent (mock)", None
+    if os.environ.get("WHATSAPP_PHONE_NUMBER_ID") and os.environ.get("WHATSAPP_ACCESS_TOKEN"):
+        try:
+            resp = await _send_whatsapp_text(lead["phone"], body)
+            provider_id = (resp.get("messages") or [{}])[0].get("id")
+            status = "sent"
+        except Exception as e:
+            logger.error(f"WhatsApp send failed: {e}")
+            raise HTTPException(502, f"WhatsApp send failed: {e}")
     msg = {
         "id": str(uuid.uuid4()), "lead_id": lead_id, "direction": "outbound",
         "channel": "whatsapp", "body": body, "template": payload.template,
-        "status": "sent (mock)", "created_at": now,
+        "status": status, "provider_id": provider_id, "created_at": now,
     }
     await db.messages.insert_one(msg)
     await _add_activity(lead_id, "whatsapp_sent", f"WhatsApp: {body[:60]}", user)
@@ -671,19 +681,30 @@ async def bulk_whatsapp(payload: BulkWhatsAppIn, user=Depends(get_current_user))
         raise HTTPException(400, "Invalid template")
     leads = await db.leads.find({"stage": payload.stage}).to_list(5000)
     now = datetime.now(timezone.utc).isoformat()
-    sent = 0
+    configured = bool(os.environ.get("WHATSAPP_PHONE_NUMBER_ID") and os.environ.get("WHATSAPP_ACCESS_TOKEN"))
+    sent, failed = 0, 0
     for lead in leads:
         body = template["body"].replace("{name}", lead.get("name") or "").replace("{course}", lead.get("course") or "your course")
+        status, provider_id = "sent (mock)", None
+        if configured:
+            try:
+                resp = await _send_whatsapp_text(lead["phone"], body)
+                provider_id = (resp.get("messages") or [{}])[0].get("id")
+                status = "sent"
+            except Exception as e:
+                logger.error(f"Bulk WhatsApp send failed for {lead['id']}: {e}")
+                status = "failed"; failed += 1
         await db.messages.insert_one({
             "id": str(uuid.uuid4()), "lead_id": lead["id"], "direction": "outbound",
             "channel": "whatsapp", "body": body, "template": template["id"],
-            "status": "sent (mock)", "created_at": now,
+            "status": status, "provider_id": provider_id, "created_at": now,
         })
         await _add_activity(lead["id"], "whatsapp_sent", f"Bulk WhatsApp: {body[:60]}", user)
-        if lead.get("stage") == "new":
-            await db.leads.update_one({"id": lead["id"]}, {"$set": {"stage": "contacted"}})
-        sent += 1
-    return {"ok": True, "sent": sent, "stage": payload.stage}
+        if status != "failed":
+            if lead.get("stage") == "new":
+                await db.leads.update_one({"id": lead["id"]}, {"$set": {"stage": "contacted"}})
+            sent += 1
+    return {"ok": True, "sent": sent, "failed": failed, "stage": payload.stage}
 
 
 @api_router.post("/bulk/calls")
