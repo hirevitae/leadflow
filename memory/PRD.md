@@ -30,21 +30,17 @@
 - Analytics: stage bar chart, source pie chart, daily new-leads line chart, conversion + win rate KPIs.
 
 ## Implemented (Jun 2026)
-- **Integration Settings Management Module (Phase 1)** — enterprise credential management, DB-backed, no .env edits after deploy:
-  - MongoDB collections `integration_settings`, `integration_meta`, `integration_audit_logs`.
-  - Fernet encryption (key derived from JWT_SECRET); secrets always masked in API responses.
-  - Config priority DB → .env → empty; one-time .env→DB auto-migration on first startup.
-  - Admin-only APIs: `GET/POST /api/admin/integrations`, `/test`, `/rotate-secret`, `DELETE /{provider}`, `/health`, `/audit`.
-  - 5 providers: WhatsApp, Facebook, Instagram, Email (Resend), AI (OpenAI/Gemini/Claude/Groq/Emergent) — each with Save, Test Connection, status badge (🟢🟡🔴⚪), show/hide/copy/rotate secrets, last-verified/updated-by.
-  - WhatsApp send + Resend email now read credentials from DB (graceful mock/400 fallback when unconfigured; never crashes).
-  - Frontend: Settings → Integrations tab = responsive per-provider cards (`IntegrationsManager.jsx`).
-  - Verified: 20/20 module tests + 21/21 regression pass.
-- **Dashboard "Today's follow-ups" widget**, **Real WhatsApp send wiring** (DB creds), and earlier Settings/P1 work.
+- **Integration Settings Module — Phase 2 + P0 Meta templates** (57/57 tests pass):
+  - Health Dashboard tab (status grid, last-verified, response time, last error, "Run all tests") + recharts response-time chart.
+  - Audit Logs tab (masked old/new values, action badges, updated_by, IP).
+  - Connection/version **history** (`GET /api/admin/integrations/history`) feeding the chart.
+  - **Import/Export** config (`/export`, `/import`) — secrets exported in ENCRYPTED form (portable on same JWT_SECRET, never plaintext).
+  - **P0 Meta-approved WhatsApp templates:** `GET /api/whatsapp/meta-templates` (fetch approved from Meta), `POST /api/leads/{id}/whatsapp-template`, `POST /api/bulk/whatsapp-template` (type:"template" send for cold first-touch outside 24h window). Wired into both the per-lead WhatsApp panel and Bulk Outreach (mode toggle + param mapping). NEEDS REAL META CREDS to deliver live — graceful 400 otherwise.
+- **Integration Settings Module — Phase 1**: DB-backed encrypted credentials (Fernet), masked responses, DB→.env→empty priority with one-time .env auto-migration, admin-only APIs, 5 provider cards, .env never edited again.
 
 ## Backlog (prioritized)
-- **P1 — Integration Module Phase 2:** Health Dashboard UI tab, Audit Logs UI, Import/Export config, Version/Connection history, response-time monitoring chart.
-- **P0** — Meta-approved WhatsApp template messages (for cold first-touch outside 24h window).
-- **P0** — Real WhatsApp send (Twilio WhatsApp Business or Meta Cloud API).
+- **P1** — verify Meta template + email + WhatsApp delivery live once real keys are entered.
+- **P2** — pagination/filters on audit logs; per-provider response-time history view.
   - Integrations: status-only view (Configured / Not configured) for WhatsApp, FB/IG, Resend email, Meta verify, LLM. Keys stay in backend/.env per user choice.
   - Auto-search: search keywords (chips), RSS source URL templates ({q}), schedule interval (1–24h), enable toggle, auto-publish toggle — drives a background scheduler in social_posts.py.
   - Templates: WhatsApp templates (add/edit/delete, EN/HI) + AI call opening scripts (EN/HI), DB-backed and used by send/bulk/call endpoints.
