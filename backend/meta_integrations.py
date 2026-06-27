@@ -40,13 +40,14 @@ def _detect_faq(text: str) -> str | None:
     return None
 
 
-async def _send_whatsapp_text(phone: str, body: str) -> dict:
-    pid = os.environ.get("WHATSAPP_PHONE_NUMBER_ID")
-    tok = os.environ.get("WHATSAPP_ACCESS_TOKEN")
+async def _send_whatsapp_text(phone: str, body: str, pid: str = None, tok: str = None, ver: str = None) -> dict:
+    pid = pid or os.environ.get("WHATSAPP_PHONE_NUMBER_ID")
+    tok = tok or os.environ.get("WHATSAPP_ACCESS_TOKEN")
     if not pid or not tok:
-        raise HTTPException(503, "WhatsApp not configured. Set WHATSAPP_PHONE_NUMBER_ID and WHATSAPP_ACCESS_TOKEN in backend/.env")
+        raise HTTPException(503, "WhatsApp not configured. Set it in Settings → Integrations")
+    base = f"https://graph.facebook.com/{ver}" if ver else GRAPH
     async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.post(f"{GRAPH}/{pid}/messages",
+        r = await c.post(f"{base}/{pid}/messages",
             headers={"Authorization": f"Bearer {tok}"},
             json={"messaging_product": "whatsapp", "to": phone, "type": "text", "text": {"body": body}})
         r.raise_for_status()

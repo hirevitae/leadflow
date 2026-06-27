@@ -12,6 +12,7 @@ import jwt
 import asyncio
 import resend
 from meta_integrations import _send_whatsapp_text
+from integrations_admin import build_integrations_router, migrate_env_to_db, get_creds, is_configured, get_value as get_integration_value
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -609,9 +610,10 @@ async def send_message(lead_id: str, payload: MessageIn, user=Depends(get_curren
     now = datetime.now(timezone.utc).isoformat()
     body = payload.body.replace("{name}", lead.get("name") or "").replace("{course}", lead.get("course") or "your course")
     status, provider_id = "sent (mock)", None
-    if os.environ.get("WHATSAPP_PHONE_NUMBER_ID") and os.environ.get("WHATSAPP_ACCESS_TOKEN"):
+    if await is_configured(db, "whatsapp"):
+        creds = await get_creds(db, "whatsapp")
         try:
-            resp = await _send_whatsapp_text(lead["phone"], body)
+            resp = await _send_whatsapp_text(lead["phone"], body, creds.get("phone_number_id"), creds.get("access_token"), creds.get("api_version"))
             provider_id = (resp.get("messages") or [{}])[0].get("id")
             status = "sent"
         except Exception as e:
@@ -681,14 +683,15 @@ async def bulk_whatsapp(payload: BulkWhatsAppIn, user=Depends(get_current_user))
         raise HTTPException(400, "Invalid template")
     leads = await db.leads.find({"stage": payload.stage}).to_list(5000)
     now = datetime.now(timezone.utc).isoformat()
-    configured = bool(os.environ.get("WHATSAPP_PHONE_NUMBER_ID") and os.environ.get("WHATSAPP_ACCESS_TOKEN"))
+    configured = await is_configured(db, "whatsapp")
+    wa = await get_creds(db, "whatsapp") if configured else {}
     sent, failed = 0, 0
     for lead in leads:
         body = template["body"].replace("{name}", lead.get("name") or "").replace("{course}", lead.get("course") or "your course")
         status, provider_id = "sent (mock)", None
         if configured:
             try:
-                resp = await _send_whatsapp_text(lead["phone"], body)
+                resp = await _send_whatsapp_text(lead["phone"], body, wa.get("phone_number_id"), wa.get("access_token"), wa.get("api_version"))
                 provider_id = (resp.get("messages") or [{}])[0].get("id")
                 status = "sent"
             except Exception as e:
@@ -850,10 +853,11 @@ async def send_lead_email(lead_id: str, payload: EmailIn, user=Depends(get_curre
         raise HTTPException(404, "Lead not found")
     if not lead.get("email"):
         raise HTTPException(400, "This lead has no email address")
-    api_key = os.environ.get("RESEND_API_KEY")
+    em = await get_creds(db, "email")
+    api_key = em.get("api_key")
     if not api_key:
-        raise HTTPException(400, "Email not configured. Add RESEND_API_KEY to backend .env")
-    sender = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
+        raise HTTPException(400, "Email not configured. Set it in Settings → Integrations")
+    sender = em.get("sender_email") or "onboarding@resend.dev"
     html = payload.body.replace("{name}", lead.get("name", "")).replace("\n", "<br>")
     resend.api_key = api_key
     params = {"from": sender, "to": [lead["email"]], "subject": payload.subject, "html": html}
@@ -876,15 +880,13 @@ async def send_lead_email(lead_id: str, payload: EmailIn, user=Depends(get_curre
 # ---------------- Settings / Config ----------------
 @api_router.get("/integrations/status")
 async def integrations_status(user=Depends(get_current_user)):
-    def has(*keys):
-        return all(bool(os.environ.get(k)) for k in keys)
     return {
-        "whatsapp": has("WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_ACCESS_TOKEN"),
-        "meta_verify": has("META_VERIFY_TOKEN"),
-        "facebook": has("FB_PAGE_ID", "FB_PAGE_ACCESS_TOKEN"),
-        "instagram": has("IG_BUSINESS_ACCOUNT_ID", "FB_PAGE_ACCESS_TOKEN"),
-        "email": has("RESEND_API_KEY"),
-        "llm": has("EMERGENT_LLM_KEY"),
+        "whatsapp": await is_configured(db, "whatsapp"),
+        "meta_verify": bool(await get_integration_value(db, "whatsapp", "verify_token")),
+        "facebook": await is_configured(db, "facebook"),
+        "instagram": await is_configured(db, "instagram"),
+        "email": await is_configured(db, "email"),
+        "llm": await is_configured(db, "ai"),
     }
 
 
@@ -988,6 +990,9 @@ async def on_startup():
     await db.calls.create_index("lead_id")
     await db.activities.create_index("lead_id")
     await db.app_config.create_index("key", unique=True)
+    await db.integration_settings.create_index([("provider", 1), ("setting_key", 1)], unique=True)
+    await db.integration_meta.create_index("provider", unique=True)
+    await migrate_env_to_db(db)
 
     try:
         if hasattr(social_router, "start_scheduler"):
@@ -1031,6 +1036,8 @@ app.include_router(build_meta_router(db, get_current_user, _add_activity))
 from social_posts import build_social_router
 social_router = build_social_router(db, get_current_user)
 app.include_router(social_router)
+
+app.include_router(build_integrations_router(db, get_current_user, require_admin))
 
 app.add_middleware(
     CORSMiddleware,

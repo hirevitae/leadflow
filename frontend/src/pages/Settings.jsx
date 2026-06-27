@@ -8,20 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import IntegrationsManager from "@/components/IntegrationsManager";
 import { toast } from "sonner";
-import { CheckCircle2, XCircle, Plug, Newspaper, MessageSquare, Users, Plus, Trash2 } from "lucide-react";
-
-const INTEGRATION_LABELS = {
-  whatsapp: { label: "WhatsApp Cloud API", keys: "WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_ACCESS_TOKEN" },
-  meta_verify: { label: "Meta Webhook Verify", keys: "META_VERIFY_TOKEN" },
-  facebook: { label: "Facebook Page", keys: "FB_PAGE_ID, FB_PAGE_ACCESS_TOKEN" },
-  instagram: { label: "Instagram", keys: "IG_BUSINESS_ACCOUNT_ID, FB_PAGE_ACCESS_TOKEN" },
-  email: { label: "Email (Resend)", keys: "RESEND_API_KEY, SENDER_EMAIL" },
-  llm: { label: "AI (Emergent LLM)", keys: "EMERGENT_LLM_KEY" },
-};
+import { Plug, Newspaper, MessageSquare, Users, Plus, Trash2 } from "lucide-react";
 
 export default function Settings() {
-  const [status, setStatus] = useState({});
   const [content, setContent] = useState(null);
   const [tpls, setTpls] = useState({ whatsapp_templates: [], call_scripts: {} });
   const [team, setTeam] = useState({ round_robin: false });
@@ -29,13 +20,11 @@ export default function Settings() {
 
   const loadAll = async () => {
     try {
-      const [s, c, t, tm] = await Promise.all([
-        api.get("/integrations/status"),
+      const [c, t, tm] = await Promise.all([
         api.get("/config/content"),
         api.get("/config/templates"),
         api.get("/config/team"),
       ]);
-      setStatus(s.data);
       setContent(c.data);
       setTpls({ whatsapp_templates: t.data.whatsapp_templates || [], call_scripts: t.data.call_scripts || {} });
       setTeam(tm.data);
@@ -88,25 +77,7 @@ export default function Settings() {
 
         {/* INTEGRATIONS */}
         <TabsContent value="integrations" className="mt-4">
-          <Card>
-            <CardHeader><CardTitle className="font-display text-lg">API integrations</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              <p className="text-sm text-zinc-500">Keys are stored securely in the backend environment. Add or update them in <span className="mono">backend/.env</span>; this panel shows live connection status.</p>
-              {Object.entries(INTEGRATION_LABELS).map(([key, meta]) => (
-                <div key={key} className="flex items-center justify-between p-3 rounded-md border border-zinc-200" data-testid={`integration-${key}`}>
-                  <div>
-                    <div className="font-medium text-sm">{meta.label}</div>
-                    <div className="text-xs text-zinc-400 mono mt-0.5">{meta.keys}</div>
-                  </div>
-                  {status[key] ? (
-                    <Badge className="bg-emerald-50 text-emerald-700 border-emerald-200"><CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Configured</Badge>
-                  ) : (
-                    <Badge className="bg-zinc-100 text-zinc-500 border-zinc-200"><XCircle className="w-3.5 h-3.5 mr-1" /> Not configured</Badge>
-                  )}
-                </div>
-              ))}
-            </CardContent>
-          </Card>
+          <IntegrationsManager />
         </TabsContent>
 
         {/* CONTENT / AUTO-SEARCH */}
