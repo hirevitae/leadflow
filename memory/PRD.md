@@ -30,8 +30,21 @@
 - Analytics: stage bar chart, source pie chart, daily new-leads line chart, conversion + win rate KPIs.
 
 ## Implemented (Jun 2026)
-- **Dashboard "Today's follow-ups" widget** — surfaces due-today + overdue pending tasks on login, with inline complete-checkboxes, overdue badges, lead links, count badge and link to the Follow-ups page.
-- **Central Settings page (admin)** — everything previously hardcoded is now editable live (no code changes):
+- **Integration Settings Management Module (Phase 1)** — enterprise credential management, DB-backed, no .env edits after deploy:
+  - MongoDB collections `integration_settings`, `integration_meta`, `integration_audit_logs`.
+  - Fernet encryption (key derived from JWT_SECRET); secrets always masked in API responses.
+  - Config priority DB → .env → empty; one-time .env→DB auto-migration on first startup.
+  - Admin-only APIs: `GET/POST /api/admin/integrations`, `/test`, `/rotate-secret`, `DELETE /{provider}`, `/health`, `/audit`.
+  - 5 providers: WhatsApp, Facebook, Instagram, Email (Resend), AI (OpenAI/Gemini/Claude/Groq/Emergent) — each with Save, Test Connection, status badge (🟢🟡🔴⚪), show/hide/copy/rotate secrets, last-verified/updated-by.
+  - WhatsApp send + Resend email now read credentials from DB (graceful mock/400 fallback when unconfigured; never crashes).
+  - Frontend: Settings → Integrations tab = responsive per-provider cards (`IntegrationsManager.jsx`).
+  - Verified: 20/20 module tests + 21/21 regression pass.
+- **Dashboard "Today's follow-ups" widget**, **Real WhatsApp send wiring** (DB creds), and earlier Settings/P1 work.
+
+## Backlog (prioritized)
+- **P1 — Integration Module Phase 2:** Health Dashboard UI tab, Audit Logs UI, Import/Export config, Version/Connection history, response-time monitoring chart.
+- **P0** — Meta-approved WhatsApp template messages (for cold first-touch outside 24h window).
+- **P0** — Real WhatsApp send (Twilio WhatsApp Business or Meta Cloud API).
   - Integrations: status-only view (Configured / Not configured) for WhatsApp, FB/IG, Resend email, Meta verify, LLM. Keys stay in backend/.env per user choice.
   - Auto-search: search keywords (chips), RSS source URL templates ({q}), schedule interval (1–24h), enable toggle, auto-publish toggle — drives a background scheduler in social_posts.py.
   - Templates: WhatsApp templates (add/edit/delete, EN/HI) + AI call opening scripts (EN/HI), DB-backed and used by send/bulk/call endpoints.
