@@ -9,8 +9,10 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import IntegrationsManager from "@/components/IntegrationsManager";
+import HealthDashboard from "@/components/HealthDashboard";
+import AuditLog from "@/components/AuditLog";
 import { toast } from "sonner";
-import { Plug, Newspaper, MessageSquare, Users, Plus, Trash2 } from "lucide-react";
+import { Plug, Newspaper, MessageSquare, Users, Plus, Trash2, Activity, ScrollText } from "lucide-react";
 
 export default function Settings() {
   const [content, setContent] = useState(null);
@@ -70,6 +72,8 @@ export default function Settings() {
       <Tabs defaultValue="integrations">
         <TabsList>
           <TabsTrigger value="integrations" data-testid="settings-tab-integrations"><Plug className="w-4 h-4 mr-1.5" /> Integrations</TabsTrigger>
+          <TabsTrigger value="health" data-testid="settings-tab-health"><Activity className="w-4 h-4 mr-1.5" /> Health</TabsTrigger>
+          <TabsTrigger value="audit" data-testid="settings-tab-audit"><ScrollText className="w-4 h-4 mr-1.5" /> Audit</TabsTrigger>
           <TabsTrigger value="content" data-testid="settings-tab-content"><Newspaper className="w-4 h-4 mr-1.5" /> Auto-search</TabsTrigger>
           <TabsTrigger value="templates" data-testid="settings-tab-templates"><MessageSquare className="w-4 h-4 mr-1.5" /> Templates</TabsTrigger>
           <TabsTrigger value="team" data-testid="settings-tab-team"><Users className="w-4 h-4 mr-1.5" /> Team</TabsTrigger>
@@ -78,6 +82,14 @@ export default function Settings() {
         {/* INTEGRATIONS */}
         <TabsContent value="integrations" className="mt-4">
           <IntegrationsManager />
+        </TabsContent>
+
+        <TabsContent value="health" className="mt-4">
+          <HealthDashboard />
+        </TabsContent>
+
+        <TabsContent value="audit" className="mt-4">
+          <AuditLog />
         </TabsContent>
 
         {/* CONTENT / AUTO-SEARCH */}

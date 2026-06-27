@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { MessageCircle, Facebook, Instagram, Mail, Sparkles, Eye, EyeOff, Copy, RefreshCw, Trash2, Plug, CheckCircle2, Loader2 } from "lucide-react";
+import { MessageCircle, Facebook, Instagram, Mail, Sparkles, Eye, EyeOff, Copy, RefreshCw, Trash2, Plug, CheckCircle2, Loader2, Upload, Download } from "lucide-react";
 
 const ICONS = { whatsapp: MessageCircle, facebook: Facebook, instagram: Instagram, email: Mail, ai: Sparkles };
 
@@ -158,11 +158,47 @@ export default function IntegrationsManager() {
   };
   useEffect(() => { load(); }, []);
 
+  const exportConfig = async () => {
+    try {
+      const { data } = await api.get("/admin/integrations/export");
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `integrations-config-${Date.now()}.json`; a.click();
+      URL.revokeObjectURL(url);
+      toast.success("Configuration exported");
+    } catch (e) { toast.error("Export failed"); }
+  };
+
+  const importConfig = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const json = JSON.parse(text);
+      const { data } = await api.post("/admin/integrations/import", json);
+      toast.success(`Imported ${data.imported} setting(s)`);
+      load();
+    } catch (err) { toast.error("Import failed — invalid file"); }
+    finally { e.target.value = ""; }
+  };
+
   if (!items) return <div className="grid md:grid-cols-2 gap-4">{[0, 1, 2, 3].map((i) => <div key={i} className="h-64 rounded-lg bg-zinc-100 animate-pulse" />)}</div>;
 
   return (
-    <div className="grid md:grid-cols-2 gap-4" data-testid="integrations-manager">
-      {items.map((it) => <IntegrationCard key={it.provider} data={it} onChanged={load} />)}
+    <div className="space-y-4">
+      <div className="flex items-center justify-end gap-2">
+        <input type="file" accept="application/json" id="import-config-input" className="hidden" onChange={importConfig} data-testid="import-config-input" />
+        <Button variant="outline" size="sm" onClick={() => document.getElementById("import-config-input").click()} data-testid="import-config-btn">
+          <Upload className="w-4 h-4 mr-1" /> Import
+        </Button>
+        <Button variant="outline" size="sm" onClick={exportConfig} data-testid="export-config-btn">
+          <Download className="w-4 h-4 mr-1" /> Export
+        </Button>
+      </div>
+      <div className="grid md:grid-cols-2 gap-4" data-testid="integrations-manager">
+        {items.map((it) => <IntegrationCard key={it.provider} data={it} onChanged={load} />)}
+      </div>
     </div>
   );
 }

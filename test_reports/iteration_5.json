@@ -1,0 +1,53 @@
+{
+  "summary": "Phase 2 (Integration Settings: history/export/import) + P0 Meta-approved WhatsApp templates fully tested. 16/16 new backend tests pass; 41/41 regression tests (test_p1_features.py + test_integrations_admin.py) still pass — total 57/57. Frontend Health, Audit, Integrations tabs render correctly with all data-testids; WhatsApp per-lead panel and Bulk Outreach dialog mode toggles work; not-configured Meta mode shows graceful amber messages (never crashes).",
+  "tested_scope": ["backend", "frontend", "phase2-history-export-import", "p0-meta-templates", "regression"],
+  "passed": [
+    "GET /api/admin/integrations/history?limit=50 — admin 200 (list), counsellor 403",
+    "History entries contain provider/status/response_time_ms/detail/created_at; running /test twice appends 2 entries",
+    "GET /api/admin/integrations/export — admin returns {version,exported_at,note,settings:[…]}; counsellor 403",
+    "Encrypted-at-rest verified: plaintext access_token NEVER appears in export response body; is_encrypted:true on secret rows",
+    "Export writes 'export' audit entry (visible in /audit)",
+    "Round-trip: seed whatsapp creds → export → DELETE /whatsapp → integrations card 'not_configured' & /integrations/status.whatsapp=false → POST /import with exported settings → card returns to 'needs_verification', access_token field shows masked •••• value, /integrations/status.whatsapp=true again",
+    "Import writes 'import' audit entry; imported count matches payload",
+    "GET /api/whatsapp/meta-templates → 400 'WhatsApp not configured' when whatsapp absent (graceful, not 500)",
+    "GET /api/whatsapp/meta-templates → 400 'Set Business Account ID' when configured without business_account_id",
+    "POST /api/leads/{id}/whatsapp-template → 400 'not configured' when WA absent; 404 for unknown lead (endpoint validates)",
+    "POST /api/bulk/whatsapp-template → 400 'not configured' (graceful)",
+    "REGRESSION: POST /api/bulk/whatsapp returns 200 with sent/failed counts in mock mode",
+    "REGRESSION: POST /api/bulk/calls returns 200 with called count",
+    "REGRESSION: existing 21 P1 tests + 20 integrations-admin tests all pass",
+    "FRONTEND Settings → Health tab: health-table renders 5 health-row-<provider> rows (whatsapp/facebook/instagram/email/ai) with status badges + response-time chart; run-all-tests-btn triggers /test for configured providers (AI shows 🟡 Needs Verification with 2357ms response)",
+    "FRONTEND Settings → Audit tab: audit-table renders 152 rows with masked values (e.g. '••••••••cted'), action badges, updated_by, ip",
+    "FRONTEND Settings → Integrations tab: export-config-btn + import-config-btn + import-config-input all visible & wired",
+    "FRONTEND per-lead WhatsApp panel: wa-mode-text & wa-mode-meta toggle present; clicking 'Approved template' surfaces wa-meta-section with friendly amber message 'WhatsApp not configured in Settings → Integrations — add real Meta credentials…' (no crash). Switching back to Quick message keeps wa-send-btn enabled.",
+    "FRONTEND Bulk Outreach dialog: open-bulk-outreach-btn opens dialog, bulk-wamode-quick & bulk-wamode-meta toggle visible; meta mode shows not-configured note; quick mode + AI Call tab show submit-bulk-outreach-btn"
+  ],
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_phase2_meta_templates.py",
+    "/app/backend/tests/test_integrations_admin.py",
+    "/app/backend/tests/test_p1_features.py",
+    "/app/test_reports/pytest/phase2_results.xml",
+    "/app/test_reports/pytest/regression_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py — /api/whatsapp/meta-templates surfaces real Meta errors as HTTP 502 with the raw upstream body in the message; that's acceptable but consider trimming/structuring the detail for production logs.",
+    "integrations_admin.py — /import is permissive: it accepts any setting_value (including arbitrary strings) and trusts is_encrypted flag from the JSON. This is fine for same-instance round-trips (note in export reminds 'importable only on an instance with the same JWT_SECRET'), but a malicious admin could craft a payload to set is_encrypted:false with a junk plaintext. Consider validating against PROVIDERS field schema (key must exist in spec) — currently only setting_key truthiness is checked.",
+    "history endpoint returns docs reversed-sorted descending then list-reversed → oldest-first; the PRD asked oldest-first which matches. If chart wants ascending-by-time, fine; if a paged 'latest N' view is needed, prefer query params for ordering.",
+    "meta_integrations._send_whatsapp_template raises httpx HTTPStatusError on non-2xx; server wraps it in HTTPException(502, str(e)) — verify upstream auth errors don't leak token in the error string (httpx error includes the URL with no token but check after a real-creds test).",
+    "BulkOutreachDialog / WhatsAppPanel — graceful amber note for not-configured meta is excellent; consider adding a deep-link button → /settings to streamline UX."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase2_meta_templates.py (new — 16 tests)",
+    "/app/test_reports/iteration_5.json (new)"
+  ],
+  "success_rate": {"backend": "100% (16/16 new + 41/41 regression = 57/57)", "frontend": "100% (Health, Audit, Integrations, per-lead WA panel modes, Bulk Outreach modes all verified)"},
+  "test_credentials": "admin@leadflow.com/admin123, counsellor1@leadflow.com/test123",
+  "seed_data_creation": "TEST_phase2_lead created and deleted via module fixture. Whatsapp/email/facebook/instagram providers reset via DELETE /api/admin/integrations/{provider} in module-scoped cleanup. AI provider untouched (.env-migrated). No persistent test artefacts left behind beyond the existing TEST_* leads from prior iterations.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "New Phase 2 suite at /app/backend/tests/test_phase2_meta_templates.py runs in ~5s. Use `pytest backend/tests/ -o addopts='' --junitxml=…` to run all three test files (test_p1_features 21, test_integrations_admin 20, test_phase2_meta_templates 16 = 57 tests). All real outbound Meta/Resend calls correctly return ok:false/status:invalid with dummy creds — never 500. The graceful 400s for meta-templates / whatsapp-template / bulk-whatsapp-template when WA is unconfigured are the EXPECTED behaviour, NOT bugs. Audit/Integrations endpoints sanitize all secrets via mask_value().",
+  "rca_of_the_issue": "N/A — no bugs found in Phase 2 + P0 Meta templates."
+}

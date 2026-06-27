@@ -11,7 +11,7 @@ import bcrypt
 import jwt
 import asyncio
 import resend
-from meta_integrations import _send_whatsapp_text
+from meta_integrations import _send_whatsapp_text, _send_whatsapp_template, fetch_meta_templates
 from integrations_admin import build_integrations_router, migrate_env_to_db, get_creds, is_configured, get_value as get_integration_value
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
@@ -160,6 +160,19 @@ class NoteIn(BaseModel):
 class BulkWhatsAppIn(BaseModel):
     stage: str
     template_id: str
+
+
+class WhatsAppTemplateIn(BaseModel):
+    template_name: str
+    language: str = "en"
+    params: List[str] = []
+
+
+class BulkWhatsAppTemplateIn(BaseModel):
+    stage: str
+    template_name: str
+    language: str = "en"
+    params: List[str] = []
 
 
 class BulkCallsIn(BaseModel):
@@ -633,6 +646,64 @@ async def send_message(lead_id: str, payload: MessageIn, user=Depends(get_curren
     return msg
 
 
+# ---------------- WhatsApp Meta-approved Templates (real Cloud API) ----------------
+@api_router.get("/whatsapp/meta-templates")
+async def whatsapp_meta_templates(user=Depends(get_current_user)):
+    if not await is_configured(db, "whatsapp"):
+        raise HTTPException(400, "WhatsApp not configured in Settings → Integrations")
+    wa = await get_creds(db, "whatsapp")
+    waba = wa.get("business_account_id")
+    if not waba:
+        raise HTTPException(400, "Set the WhatsApp Business Account ID in Settings → Integrations")
+    try:
+        tpls = await fetch_meta_templates(waba, wa.get("access_token"), wa.get("api_version"))
+    except Exception as e:
+        logger.error(f"Meta template fetch failed: {e}")
+        raise HTTPException(502, f"Failed to fetch templates from Meta: {e}")
+    out = []
+    for t in tpls:
+        body = next((c.get("text", "") for c in t.get("components", []) if c.get("type") == "BODY"), "")
+        out.append({"name": t.get("name"), "language": t.get("language"),
+                    "status": t.get("status"), "category": t.get("category"),
+                    "body": body, "param_count": body.count("{{")})
+    return out
+
+
+def _fill_params(params, lead):
+    return [(p or "").replace("{name}", lead.get("name") or "").replace("{course}", lead.get("course") or "") for p in params]
+
+
+@api_router.post("/leads/{lead_id}/whatsapp-template")
+async def send_lead_whatsapp_template(lead_id: str, payload: WhatsAppTemplateIn, user=Depends(get_current_user)):
+    lead = await db.leads.find_one({"id": lead_id})
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    if not await is_configured(db, "whatsapp"):
+        raise HTTPException(400, "WhatsApp not configured. Add real Meta credentials in Settings → Integrations")
+    wa = await get_creds(db, "whatsapp")
+    params = _fill_params(payload.params, lead)
+    try:
+        resp = await _send_whatsapp_template(lead["phone"], payload.template_name, payload.language, params,
+                                             wa.get("phone_number_id"), wa.get("access_token"), wa.get("api_version"))
+        provider_id = (resp.get("messages") or [{}])[0].get("id")
+    except Exception as e:
+        logger.error(f"WhatsApp template send failed: {e}")
+        raise HTTPException(502, f"WhatsApp template send failed: {e}")
+    now = datetime.now(timezone.utc).isoformat()
+    body_repr = f"[Template: {payload.template_name}]" + (" " + " | ".join(params) if params else "")
+    msg = {
+        "id": str(uuid.uuid4()), "lead_id": lead_id, "direction": "outbound",
+        "channel": "whatsapp", "body": body_repr, "template": payload.template_name,
+        "type": "template", "status": "sent", "provider_id": provider_id, "created_at": now,
+    }
+    await db.messages.insert_one(msg)
+    await _add_activity(lead_id, "whatsapp_sent", f"WhatsApp template: {payload.template_name}", user)
+    if lead.get("stage") == "new":
+        await db.leads.update_one({"id": lead_id}, {"$set": {"stage": "contacted"}})
+    msg.pop("_id", None)
+    return msg
+
+
 # ---------------- AI Calls (Mock) ----------------
 @api_router.get("/leads/{lead_id}/calls")
 async def list_calls(lead_id: str, user=Depends(get_current_user)):
@@ -703,6 +774,40 @@ async def bulk_whatsapp(payload: BulkWhatsAppIn, user=Depends(get_current_user))
             "status": status, "provider_id": provider_id, "created_at": now,
         })
         await _add_activity(lead["id"], "whatsapp_sent", f"Bulk WhatsApp: {body[:60]}", user)
+        if status != "failed":
+            if lead.get("stage") == "new":
+                await db.leads.update_one({"id": lead["id"]}, {"$set": {"stage": "contacted"}})
+            sent += 1
+    return {"ok": True, "sent": sent, "failed": failed, "stage": payload.stage}
+
+
+@api_router.post("/bulk/whatsapp-template")
+async def bulk_whatsapp_template(payload: BulkWhatsAppTemplateIn, user=Depends(get_current_user)):
+    if payload.stage not in PIPELINE_STAGES:
+        raise HTTPException(400, "Invalid stage")
+    if not await is_configured(db, "whatsapp"):
+        raise HTTPException(400, "WhatsApp not configured. Add real Meta credentials in Settings → Integrations")
+    wa = await get_creds(db, "whatsapp")
+    leads = await db.leads.find({"stage": payload.stage}).to_list(5000)
+    now = datetime.now(timezone.utc).isoformat()
+    sent, failed = 0, 0
+    for lead in leads:
+        params = _fill_params(payload.params, lead)
+        try:
+            resp = await _send_whatsapp_template(lead["phone"], payload.template_name, payload.language, params,
+                                                 wa.get("phone_number_id"), wa.get("access_token"), wa.get("api_version"))
+            provider_id = (resp.get("messages") or [{}])[0].get("id")
+            status = "sent"
+        except Exception as e:
+            logger.error(f"Bulk WhatsApp template failed for {lead['id']}: {e}")
+            status = "failed"; provider_id = None; failed += 1
+        body_repr = f"[Template: {payload.template_name}]" + (" " + " | ".join(params) if params else "")
+        await db.messages.insert_one({
+            "id": str(uuid.uuid4()), "lead_id": lead["id"], "direction": "outbound",
+            "channel": "whatsapp", "body": body_repr, "template": payload.template_name,
+            "type": "template", "status": status, "provider_id": provider_id, "created_at": now,
+        })
+        await _add_activity(lead["id"], "whatsapp_sent", f"Bulk template: {payload.template_name}", user)
         if status != "failed":
             if lead.get("stage") == "new":
                 await db.leads.update_one({"id": lead["id"]}, {"$set": {"stage": "contacted"}})

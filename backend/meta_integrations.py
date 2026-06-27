@@ -54,6 +54,30 @@ async def _send_whatsapp_text(phone: str, body: str, pid: str = None, tok: str =
         return r.json()
 
 
+async def _send_whatsapp_template(phone: str, name: str, lang_code: str, params: list,
+                                  pid: str, tok: str, ver: str = None) -> dict:
+    base = f"https://graph.facebook.com/{ver}" if ver else GRAPH
+    components = []
+    if params:
+        components = [{"type": "body", "parameters": [{"type": "text", "text": str(p)} for p in params]}]
+    payload = {"messaging_product": "whatsapp", "to": phone, "type": "template",
+               "template": {"name": name, "language": {"code": lang_code}, "components": components}}
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.post(f"{base}/{pid}/messages",
+                         headers={"Authorization": f"Bearer {tok}"}, json=payload)
+        r.raise_for_status()
+        return r.json()
+
+
+async def fetch_meta_templates(waba_id: str, tok: str, ver: str = None) -> list:
+    base = f"https://graph.facebook.com/{ver}" if ver else GRAPH
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.get(f"{base}/{waba_id}/message_templates",
+                        params={"access_token": tok, "limit": 100})
+        r.raise_for_status()
+        return r.json().get("data", [])
+
+
 async def _send_ig_dm(ig_user_id: str, body: str) -> dict:
     igb = os.environ.get("IG_BUSINESS_ACCOUNT_ID"); tok = os.environ.get("FB_PAGE_ACCESS_TOKEN")
     if not igb or not tok:

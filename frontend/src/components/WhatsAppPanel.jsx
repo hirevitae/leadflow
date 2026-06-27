@@ -13,6 +13,44 @@ export default function WhatsAppPanel({ lead, onActivity }) {
   const [templateId, setTemplateId] = useState("custom");
   const [sending, setSending] = useState(false);
   const [refining, setRefining] = useState(false);
+  const [mode, setMode] = useState("text");
+  const [metaTemplates, setMetaTemplates] = useState([]);
+  const [metaErr, setMetaErr] = useState("");
+  const [metaName, setMetaName] = useState("");
+  const [metaParams, setMetaParams] = useState([]);
+
+  const loadMetaTemplates = async () => {
+    setMetaErr("");
+    try {
+      const { data } = await api.get("/whatsapp/meta-templates");
+      setMetaTemplates(data);
+    } catch (e) {
+      setMetaTemplates([]);
+      setMetaErr(formatApiError(e.response?.data?.detail) || "Could not load Meta templates");
+    }
+  };
+
+  const onMetaSelect = (name) => {
+    setMetaName(name);
+    const t = metaTemplates.find((x) => x.name === name);
+    setMetaParams(new Array(t?.param_count || 0).fill("").map((_, i) => i === 0 ? "{name}" : ""));
+  };
+
+  const sendMetaTemplate = async () => {
+    if (!metaName) { toast.error("Pick a template"); return; }
+    setSending(true);
+    try {
+      const t = metaTemplates.find((x) => x.name === metaName);
+      await api.post(`/leads/${lead.id}/whatsapp-template`, {
+        template_name: metaName, language: t?.language || "en", params: metaParams,
+      });
+      setMetaName(""); setMetaParams([]);
+      await loadMsgs(); onActivity?.();
+      toast.success("Template message sent");
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || "Failed to send");
+    } finally { setSending(false); }
+  };
 
   const refine = async () => {
     if (!body.trim()) return;
@@ -86,28 +124,65 @@ export default function WhatsAppPanel({ lead, onActivity }) {
       </div>
 
       <div className="border-t border-zinc-200 p-3 space-y-2">
-        <Select value={templateId} onValueChange={onTemplateChange}>
-          <SelectTrigger data-testid="wa-template-select"><SelectValue placeholder="Choose template…" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="custom">Custom message</SelectItem>
-            {templates.map((t) => (
-              <SelectItem key={t.id} value={t.id}>{t.name} ({t.lang})</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Textarea
-          rows={3} value={body} onChange={(e) => setBody(e.target.value)}
-          placeholder="Type a message… use {name} and {course} as placeholders"
-          data-testid="wa-body-input"
-        />
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={refine} disabled={refining || !body.trim()} data-testid="wa-refine-btn">
-            <Sparkles className="w-4 h-4 mr-1.5" />{refining ? "Polishing…" : "Refine with AI"}
-          </Button>
-          <Button onClick={send} disabled={sending || !body.trim()} className="bg-emerald-600 hover:bg-emerald-700" data-testid="wa-send-btn">
-            <Send className="w-4 h-4 mr-1.5" />{sending ? "Sending…" : "Send"}
-          </Button>
+        <div className="flex gap-1 mb-1">
+          <Button variant={mode === "text" ? "default" : "outline"} size="sm" className={mode === "text" ? "bg-emerald-600 hover:bg-emerald-700" : ""} onClick={() => setMode("text")} data-testid="wa-mode-text">Quick message</Button>
+          <Button variant={mode === "meta" ? "default" : "outline"} size="sm" className={mode === "meta" ? "bg-emerald-600 hover:bg-emerald-700" : ""} onClick={() => { setMode("meta"); if (metaTemplates.length === 0) loadMetaTemplates(); }} data-testid="wa-mode-meta">Approved template</Button>
         </div>
+
+        {mode === "text" ? (
+          <>
+            <Select value={templateId} onValueChange={onTemplateChange}>
+              <SelectTrigger data-testid="wa-template-select"><SelectValue placeholder="Choose template…" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="custom">Custom message</SelectItem>
+                {templates.map((t) => (
+                  <SelectItem key={t.id} value={t.id}>{t.name} ({t.lang})</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Textarea
+              rows={3} value={body} onChange={(e) => setBody(e.target.value)}
+              placeholder="Type a message… use {name} and {course} as placeholders"
+              data-testid="wa-body-input"
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={refine} disabled={refining || !body.trim()} data-testid="wa-refine-btn">
+                <Sparkles className="w-4 h-4 mr-1.5" />{refining ? "Polishing…" : "Refine with AI"}
+              </Button>
+              <Button onClick={send} disabled={sending || !body.trim()} className="bg-emerald-600 hover:bg-emerald-700" data-testid="wa-send-btn">
+                <Send className="w-4 h-4 mr-1.5" />{sending ? "Sending…" : "Send"}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <div className="space-y-2" data-testid="wa-meta-section">
+            {metaErr ? (
+              <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">{metaErr} — add real Meta credentials in Settings → Integrations, then refresh.</div>
+            ) : (
+              <>
+                <Select value={metaName} onValueChange={onMetaSelect}>
+                  <SelectTrigger data-testid="wa-meta-template-select"><SelectValue placeholder="Choose approved template…" /></SelectTrigger>
+                  <SelectContent>
+                    {metaTemplates.map((t) => (
+                      <SelectItem key={t.name} value={t.name}>{t.name} · {t.language} {t.status ? `(${t.status})` : ""}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {metaParams.map((p, i) => (
+                  <input key={i} className="w-full text-sm border border-zinc-200 rounded px-2 py-1.5"
+                    placeholder={`Parameter {{${i + 1}}} — supports {name}, {course}`} value={p}
+                    onChange={(e) => setMetaParams((prev) => prev.map((x, idx) => idx === i ? e.target.value : x))}
+                    data-testid={`wa-meta-param-${i}`} />
+                ))}
+                <div className="flex justify-end">
+                  <Button onClick={sendMetaTemplate} disabled={sending || !metaName} className="bg-emerald-600 hover:bg-emerald-700" data-testid="wa-meta-send-btn">
+                    <Send className="w-4 h-4 mr-1.5" />{sending ? "Sending…" : "Send template"}
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

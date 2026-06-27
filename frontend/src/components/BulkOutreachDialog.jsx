@@ -16,6 +16,23 @@ export default function BulkOutreachDialog({ onDone }) {
   const [templates, setTemplates] = useState([]);
   const [counts, setCounts] = useState({});
   const [sending, setSending] = useState(false);
+  const [waMode, setWaMode] = useState("quick");
+  const [metaTemplates, setMetaTemplates] = useState([]);
+  const [metaErr, setMetaErr] = useState("");
+  const [metaName, setMetaName] = useState("");
+  const [metaParams, setMetaParams] = useState([]);
+
+  const loadMetaTemplates = async () => {
+    setMetaErr("");
+    try { const { data } = await api.get("/whatsapp/meta-templates"); setMetaTemplates(data); }
+    catch (e) { setMetaTemplates([]); setMetaErr(formatApiError(e.response?.data?.detail) || "Could not load Meta templates"); }
+  };
+
+  const onMetaSelect = (name) => {
+    setMetaName(name);
+    const t = metaTemplates.find((x) => x.name === name);
+    setMetaParams(new Array(t?.param_count || 0).fill("").map((_, i) => i === 0 ? "{name}" : ""));
+  };
 
   const loadMeta = async () => {
     try {
@@ -45,8 +62,17 @@ export default function BulkOutreachDialog({ onDone }) {
     setSending(true);
     try {
       if (mode === "whatsapp") {
-        const res = await api.post("/bulk/whatsapp", { stage, template_id: templateId });
-        toast.success(`Sent WhatsApp to ${res.data.sent} lead${res.data.sent === 1 ? "" : "s"}`);
+        if (waMode === "meta") {
+          if (!metaName) { toast.error("Pick an approved template"); setSending(false); return; }
+          const t = metaTemplates.find((x) => x.name === metaName);
+          const res = await api.post("/bulk/whatsapp-template", {
+            stage, template_name: metaName, language: t?.language || "en", params: metaParams,
+          });
+          toast.success(`Template sent to ${res.data.sent} lead${res.data.sent === 1 ? "" : "s"}${res.data.failed ? `, ${res.data.failed} failed` : ""}`);
+        } else {
+          const res = await api.post("/bulk/whatsapp", { stage, template_id: templateId });
+          toast.success(`Sent WhatsApp to ${res.data.sent} lead${res.data.sent === 1 ? "" : "s"}`);
+        }
       } else {
         const res = await api.post("/bulk/calls", { stage, language });
         toast.success(`Placed AI calls to ${res.data.called} lead${res.data.called === 1 ? "" : "s"}`);
@@ -95,16 +121,42 @@ export default function BulkOutreachDialog({ onDone }) {
               </Select>
             </div>
 
-            <TabsContent value="whatsapp" className="m-0 space-y-1.5">
-              <label className="text-sm font-medium text-zinc-700">Message template</label>
-              <Select value={templateId} onValueChange={setTemplateId}>
-                <SelectTrigger data-testid="bulk-template-select"><SelectValue placeholder="Choose template" /></SelectTrigger>
-                <SelectContent>
-                  {templates.map((t) => (
-                    <SelectItem key={t.id} value={t.id}>{t.name} · {t.lang}</SelectItem>
+            <TabsContent value="whatsapp" className="m-0 space-y-2">
+              <div className="flex gap-1">
+                <Button type="button" variant={waMode === "quick" ? "default" : "outline"} size="sm" className={waMode === "quick" ? "bg-blue-600 hover:bg-blue-700" : ""} onClick={() => setWaMode("quick")} data-testid="bulk-wamode-quick">Quick template</Button>
+                <Button type="button" variant={waMode === "meta" ? "default" : "outline"} size="sm" className={waMode === "meta" ? "bg-blue-600 hover:bg-blue-700" : ""} onClick={() => { setWaMode("meta"); if (metaTemplates.length === 0) loadMetaTemplates(); }} data-testid="bulk-wamode-meta">Approved template</Button>
+              </div>
+              {waMode === "quick" ? (
+                <>
+                  <label className="text-sm font-medium text-zinc-700">Message template</label>
+                  <Select value={templateId} onValueChange={setTemplateId}>
+                    <SelectTrigger data-testid="bulk-template-select"><SelectValue placeholder="Choose template" /></SelectTrigger>
+                    <SelectContent>
+                      {templates.map((t) => (
+                        <SelectItem key={t.id} value={t.id}>{t.name} · {t.lang}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </>
+              ) : metaErr ? (
+                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">{metaErr} — add real Meta credentials in Settings → Integrations.</div>
+              ) : (
+                <>
+                  <label className="text-sm font-medium text-zinc-700">Approved Meta template</label>
+                  <Select value={metaName} onValueChange={onMetaSelect}>
+                    <SelectTrigger data-testid="bulk-meta-template-select"><SelectValue placeholder="Choose approved template" /></SelectTrigger>
+                    <SelectContent>
+                      {metaTemplates.map((t) => <SelectItem key={t.name} value={t.name}>{t.name} · {t.language}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  {metaParams.map((p, i) => (
+                    <input key={i} className="w-full text-sm border border-zinc-200 rounded px-2 py-1.5"
+                      placeholder={`Parameter {{${i + 1}}} — supports {name}, {course}`} value={p}
+                      onChange={(e) => setMetaParams((prev) => prev.map((x, idx) => idx === i ? e.target.value : x))}
+                      data-testid={`bulk-meta-param-${i}`} />
                   ))}
-                </SelectContent>
-              </Select>
+                </>
+              )}
             </TabsContent>
 
             <TabsContent value="call" className="m-0 space-y-1.5">
@@ -130,7 +182,7 @@ export default function BulkOutreachDialog({ onDone }) {
           <Button variant="outline" onClick={() => setOpen(false)} data-testid="cancel-bulk-outreach-btn">Cancel</Button>
           <Button
             onClick={submit}
-            disabled={sending || target === 0 || (mode === "whatsapp" && !templateId)}
+            disabled={sending || target === 0 || (mode === "whatsapp" && waMode === "quick" && !templateId) || (mode === "whatsapp" && waMode === "meta" && !metaName)}
             className="bg-blue-600 hover:bg-blue-700"
             data-testid="submit-bulk-outreach-btn"
           >

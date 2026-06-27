@@ -386,6 +386,11 @@ def build_integrations_router(db, get_current_user, require_admin):
         await _set_meta(db, provider, status=status,
                         last_verified_at=datetime.now(timezone.utc).isoformat() if ok else None,
                         response_time_ms=ms, last_error=None if ok else detail)
+        await db.integration_history.insert_one({
+            "provider": provider, "status": status, "response_time_ms": ms,
+            "detail": (detail or "")[:300], "tested_by": user.get("email"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
         await _audit(db, provider, "test", None, status, user,
                      request.client.host if request.client else "")
         return {"ok": ok, "status": status, "detail": detail, "response_time_ms": ms}
@@ -436,5 +441,50 @@ def build_integrations_router(db, get_current_user, require_admin):
         for d in docs:
             d.pop("_id", None)
         return docs
+
+    @router.get("/history")
+    async def history(provider: str = None, limit: int = 50, user=Depends(get_current_user)):
+        require_admin(user)
+        q = {"provider": provider} if provider else {}
+        docs = await db.integration_history.find(q).sort("created_at", -1).to_list(min(limit, 200))
+        for d in docs:
+            d.pop("_id", None)
+        return list(reversed(docs))
+
+    @router.get("/export")
+    async def export_config(request: Request, user=Depends(get_current_user)):
+        require_admin(user)
+        rows = await db.integration_settings.find({}).to_list(1000)
+        settings = [{"provider": r["provider"], "setting_key": r["setting_key"],
+                     "setting_value": r.get("setting_value"), "is_encrypted": r.get("is_encrypted", False)}
+                    for r in rows]
+        await _audit(db, "all", "export", None, str(len(settings)), user,
+                     request.client.host if request.client else "")
+        return {"version": 1, "exported_at": datetime.now(timezone.utc).isoformat(),
+                "note": "Secrets remain encrypted; importable only on an instance with the same JWT_SECRET.",
+                "settings": settings}
+
+    @router.post("/import")
+    async def import_config(payload: dict, request: Request, user=Depends(get_current_user)):
+        require_admin(user)
+        settings = payload.get("settings", [])
+        now = datetime.now(timezone.utc).isoformat()
+        count = 0
+        for s in settings:
+            if s.get("provider") not in PROVIDERS or not s.get("setting_key"):
+                continue
+            await db.integration_settings.update_one(
+                {"provider": s["provider"], "setting_key": s["setting_key"]},
+                {"$set": {"provider": s["provider"], "setting_key": s["setting_key"],
+                          "setting_value": s.get("setting_value"),
+                          "is_encrypted": s.get("is_encrypted", False),
+                          "updated_by": user.get("email"), "updated_at": now},
+                 "$setOnInsert": {"created_by": user.get("email"), "created_at": now}},
+                upsert=True)
+            await _set_meta(db, s["provider"], status="needs_verification")
+            count += 1
+        await _audit(db, "all", "import", None, str(count), user,
+                     request.client.host if request.client else "")
+        return {"ok": True, "imported": count}
 
     return router
