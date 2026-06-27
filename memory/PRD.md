@@ -30,6 +30,7 @@
 - Analytics: stage bar chart, source pie chart, daily new-leads line chart, conversion + win rate KPIs.
 
 ## Implemented (Jun 2026)
+- **Dashboard "Today's follow-ups" widget** — surfaces due-today + overdue pending tasks on login, with inline complete-checkboxes, overdue badges, lead links, count badge and link to the Follow-ups page.
 - **Central Settings page (admin)** — everything previously hardcoded is now editable live (no code changes):
   - Integrations: status-only view (Configured / Not configured) for WhatsApp, FB/IG, Resend email, Meta verify, LLM. Keys stay in backend/.env per user choice.
   - Auto-search: search keywords (chips), RSS source URL templates ({q}), schedule interval (1–24h), enable toggle, auto-publish toggle — drives a background scheduler in social_posts.py.
