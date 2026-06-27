@@ -435,12 +435,20 @@ def build_integrations_router(db, get_current_user, require_admin):
         return rows
 
     @router.get("/audit")
-    async def audit_logs(user=Depends(get_current_user)):
+    async def audit_logs(provider: str = None, action: str = None, limit: int = 25, skip: int = 0,
+                         user=Depends(get_current_user)):
         require_admin(user)
-        docs = await db.integration_audit_logs.find({}).sort("created_at", -1).to_list(200)
+        q = {}
+        if provider:
+            q["provider"] = provider
+        if action:
+            q["action"] = action
+        limit = max(1, min(limit, 100))
+        total = await db.integration_audit_logs.count_documents(q)
+        docs = await db.integration_audit_logs.find(q).sort("created_at", -1).skip(max(0, skip)).limit(limit).to_list(limit)
         for d in docs:
             d.pop("_id", None)
-        return docs
+        return {"items": docs, "total": total, "limit": limit, "skip": skip}
 
     @router.get("/history")
     async def history(provider: str = None, limit: int = 50, user=Depends(get_current_user)):

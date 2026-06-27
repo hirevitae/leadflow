@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { toast } from "sonner";
 import { Activity, RefreshCw, Loader2 } from "lucide-react";
@@ -20,18 +21,25 @@ export default function HealthDashboard() {
   const [rows, setRows] = useState([]);
   const [history, setHistory] = useState([]);
   const [running, setRunning] = useState(false);
+  const [chartProvider, setChartProvider] = useState("all");
+
+  const loadHistory = async (prov) => {
+    try {
+      const q = prov && prov !== "all" ? `?provider=${prov}&limit=50` : "?limit=50";
+      const { data } = await api.get(`/admin/integrations/history${q}`);
+      setHistory(h_to_chart(data));
+    } catch { /* ignore */ }
+  };
 
   const load = async () => {
     try {
-      const [h, hist] = await Promise.all([
-        api.get("/admin/integrations/health"),
-        api.get("/admin/integrations/history?limit=50"),
-      ]);
-      setRows(h.data);
-      setHistory(h_to_chart(hist.data));
+      const { data } = await api.get("/admin/integrations/health");
+      setRows(data);
+      await loadHistory(chartProvider);
     } catch (e) { toast.error("Could not load health data"); }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { loadHistory(chartProvider); /* eslint-disable-next-line */ }, [chartProvider]);
 
   const h_to_chart = (hist) =>
     hist.map((d) => ({
@@ -89,7 +97,16 @@ export default function HealthDashboard() {
 
       <Card>
         <CardContent className="p-5">
-          <div className="text-sm font-medium text-zinc-700 mb-3">Response time (recent tests)</div>
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-sm font-medium text-zinc-700">Response time (recent tests)</div>
+            <Select value={chartProvider} onValueChange={setChartProvider}>
+              <SelectTrigger className="w-44 h-9" data-testid="chart-provider-select"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All providers</SelectItem>
+                {rows.map((r) => <SelectItem key={r.provider} value={r.provider}>{r.label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
           {history.length === 0 ? (
             <div className="text-sm text-zinc-500 py-10 text-center">No connection tests yet. Run a test to see response times.</div>
           ) : (

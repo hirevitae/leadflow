@@ -162,8 +162,10 @@ class TestSave:
         }, timeout=30)
         r = requests.get(f"{API}/admin/integrations/audit", headers=admin_h, timeout=30)
         assert r.status_code == 200
-        logs = r.json()
+        payload = r.json()
+        logs = payload["items"]
         assert isinstance(logs, list) and len(logs) > 0
+        assert "total" in payload
         body = r.text
         assert "AUDIT_SECRET_TOK_2026" not in body, "raw secret leaked in audit log"
         latest = logs[0]

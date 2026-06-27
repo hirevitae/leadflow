@@ -30,7 +30,8 @@
 - Analytics: stage bar chart, source pie chart, daily new-leads line chart, conversion + win rate KPIs.
 
 ## Implemented (Jun 2026)
-- **Integration Settings Module — Phase 2 + P0 Meta templates** (57/57 tests pass):
+- **Integration Module — P2 polish:** Audit Logs now paginated (25/page, Prev/Next, total count) with **provider + action filters** (`GET /api/admin/integrations/audit?provider=&action=&limit=&skip=` → `{items,total,limit,skip}`). Health response-time chart has a **per-provider filter** (`/history?provider=`). Verified (20/20 integration tests still pass; filters/pagination curl-checked).
+- **Integration Module — Phase 2 + P0 Meta templates** (57/57 tests):
   - Health Dashboard tab (status grid, last-verified, response time, last error, "Run all tests") + recharts response-time chart.
   - Audit Logs tab (masked old/new values, action badges, updated_by, IP).
   - Connection/version **history** (`GET /api/admin/integrations/history`) feeding the chart.
