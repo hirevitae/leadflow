@@ -49,8 +49,9 @@
   - Stack: Emergent Universal LLM key (openai gpt-4.1-mini), TF-IDF retrieval in Mongo.
 
 ## Backlog (prioritized)
-- **P1 — AI Agent Studio Phase 2:** Q&A training data, knowledge gaps/unknown questions, prompt versioning/rollback, per-agent analytics, self-learning loop from transcripts, QA review, vector embeddings (Qdrant/pgvector) upgrade.
-- **P1 — AI Agent Studio Phase 3 (needs Twilio + voice keys):** live inbound/outbound PSTN calling, STT/TTS streaming, recording, human handoff, campaign calling.
+- **P1 — AI Agent Studio Phase 2:** DONE (Jun 2026). Q&A training, knowledge gaps/unknowns, prompt versioning/rollback, per-agent analytics, self-learning loop, QA review — 79 tests pass (iteration_7.json).
+- **P1 — Voice provider credentials (Twilio / ElevenLabs / OpenAI):** DONE (Jun 2026). Added `twilio`, `elevenlabs`, `openai` providers to Integration Settings (`integrations_admin.py`) — DB-backed, Fernet-encrypted, masked, with live connection testers (Twilio Accounts API, ElevenLabs /v1/user, OpenAI /v1/models). Fields: Twilio (account_sid, auth_token, api_key, api_secret, phone_number), ElevenLabs (api_key, voice_id), OpenAI (api_key). Frontend renders new cards dynamically. Managed from Settings → Integrations, never .env.
+- **P1 — AI Agent Studio Phase 3 (needs the above voice keys):** live inbound/outbound PSTN calling, STT/TTS streaming, recording, human handoff, campaign calling.
 - **P2** — a11y: add DialogDescription to dialogs; make Leads rows fully clickable.
   - Integrations: status-only view (Configured / Not configured) for WhatsApp, FB/IG, Resend email, Meta verify, LLM. Keys stay in backend/.env per user choice.
   - Auto-search: search keywords (chips), RSS source URL templates ({q}), schedule interval (1–24h), enable toggle, auto-publish toggle — drives a background scheduler in social_posts.py.

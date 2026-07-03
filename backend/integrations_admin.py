@@ -70,6 +70,35 @@ PROVIDERS = {
         ],
         "required": ["api_key"],
     },
+    "twilio": {
+        "label": "Twilio (Voice / SMS)",
+        "description": "Place outbound AI voice calls and send SMS to leads via Twilio.",
+        "fields": [
+            {"key": "account_sid", "label": "Account SID", "secret": False},
+            {"key": "auth_token", "label": "Auth Token", "secret": True},
+            {"key": "api_key", "label": "API Key (SID, optional)", "secret": True},
+            {"key": "api_secret", "label": "API Secret (optional)", "secret": True},
+            {"key": "phone_number", "label": "Phone Number (E.164)", "secret": False},
+        ],
+        "required": ["account_sid", "auth_token", "phone_number"],
+    },
+    "elevenlabs": {
+        "label": "ElevenLabs (Voice AI)",
+        "description": "Natural multilingual text-to-speech for the AI caller.",
+        "fields": [
+            {"key": "api_key", "label": "API Key", "secret": True},
+            {"key": "voice_id", "label": "Default Voice ID (optional)", "secret": False},
+        ],
+        "required": ["api_key"],
+    },
+    "openai": {
+        "label": "OpenAI (Realtime / TTS / STT)",
+        "description": "OpenAI key for realtime voice, speech-to-text and text-to-speech.",
+        "fields": [
+            {"key": "api_key", "label": "API Key", "secret": True},
+        ],
+        "required": ["api_key"],
+    },
 }
 
 # Map provider/key -> legacy .env variable for one-time migration & fallback
@@ -85,6 +114,13 @@ ENV_MAP = {
     ("email", "api_key"): "RESEND_API_KEY",
     ("email", "sender_email"): "SENDER_EMAIL",
     ("ai", "api_key"): "EMERGENT_LLM_KEY",
+    ("twilio", "account_sid"): "TWILIO_ACCOUNT_SID",
+    ("twilio", "auth_token"): "TWILIO_AUTH_TOKEN",
+    ("twilio", "api_key"): "TWILIO_API_KEY",
+    ("twilio", "api_secret"): "TWILIO_API_SECRET",
+    ("twilio", "phone_number"): "TWILIO_PHONE_NUMBER",
+    ("elevenlabs", "api_key"): "ELEVENLABS_API_KEY",
+    ("openai", "api_key"): "OPENAI_API_KEY",
 }
 
 
@@ -297,8 +333,37 @@ async def _test_ai(c):
     return False, r.text[:300]
 
 
+async def _test_twilio(c):
+    sid = c.get("account_sid"); tok = c.get("auth_token")
+    async with httpx.AsyncClient(timeout=15) as cli:
+        r = await cli.get(f"https://api.twilio.com/2010-04-01/Accounts/{sid}.json", auth=(sid, tok))
+    if r.status_code == 200:
+        return True, f"Connected: {r.json().get('friendly_name', sid)}"
+    return False, r.text[:300]
+
+
+async def _test_elevenlabs(c):
+    key = c.get("api_key")
+    async with httpx.AsyncClient(timeout=15) as cli:
+        r = await cli.get("https://api.elevenlabs.io/v1/user", headers={"xi-api-key": key})
+    if r.status_code == 200:
+        tier = (r.json().get("subscription") or {}).get("tier", "connected")
+        return True, f"ElevenLabs key valid ({tier})"
+    return False, r.text[:300]
+
+
+async def _test_openai(c):
+    key = c.get("api_key")
+    async with httpx.AsyncClient(timeout=20) as cli:
+        r = await cli.get("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {key}"})
+    if r.status_code == 200:
+        return True, "OpenAI key valid"
+    return False, r.text[:300]
+
+
 TESTERS = {"whatsapp": _test_whatsapp, "facebook": _test_facebook,
-           "instagram": _test_instagram, "email": _test_email, "ai": _test_ai}
+           "instagram": _test_instagram, "email": _test_email, "ai": _test_ai,
+           "twilio": _test_twilio, "elevenlabs": _test_elevenlabs, "openai": _test_openai}
 
 
 # ---------------- Router ----------------

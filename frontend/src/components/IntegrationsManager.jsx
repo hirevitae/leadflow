@@ -6,9 +6,9 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { MessageCircle, Facebook, Instagram, Mail, Sparkles, Eye, EyeOff, Copy, RefreshCw, Trash2, Plug, CheckCircle2, Loader2, Upload, Download } from "lucide-react";
+import { MessageCircle, Facebook, Instagram, Mail, Sparkles, Eye, EyeOff, Copy, RefreshCw, Trash2, Plug, CheckCircle2, Loader2, Upload, Download, Phone, AudioLines, Bot } from "lucide-react";
 
-const ICONS = { whatsapp: MessageCircle, facebook: Facebook, instagram: Instagram, email: Mail, ai: Sparkles };
+const ICONS = { whatsapp: MessageCircle, facebook: Facebook, instagram: Instagram, email: Mail, ai: Sparkles, twilio: Phone, elevenlabs: AudioLines, openai: Bot };
 
 const STATUS = {
   connected: { dot: "🟢", label: "Connected", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
