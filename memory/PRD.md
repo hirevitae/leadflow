@@ -40,9 +40,18 @@
   - **P0 Meta-approved WhatsApp templates:** `GET /api/whatsapp/meta-templates` (fetch approved from Meta), `POST /api/leads/{id}/whatsapp-template`, `POST /api/bulk/whatsapp-template` (type:"template" send for cold first-touch outside 24h window). Wired into both the per-lead WhatsApp panel and Bulk Outreach (mode toggle + param mapping). NEEDS REAL META CREDS to deliver live — graceful 400 otherwise.
 - **Integration Settings Module — Phase 1**: DB-backed encrypted credentials (Fernet), masked responses, DB→.env→empty priority with one-time .env auto-migration, admin-only APIs, 5 provider cards, .env never edited again.
 
+## Implemented (Jun 2026)
+- **AI Agent Studio — Phase 1 + AI Calling FIX** (51/51 tests pass): fixed "AI calling not working" — the old canned mock is replaced by a **real, knowledge-grounded LLM conversation** when an agent is assigned (backward-compatible scripted fallback when none).
+  - Create/edit/delete unlimited **AI Agents** (name, category, personality, language, goal, system prompt, greeting/fallback, status) — `/api/agents` CRUD, role-aware.
+  - **Per-agent Knowledge Base**: upload PDF/DOCX/TXT/CSV/XLSX + manual text → extracted, chunked, retrieved via TF-IDF (each agent retrieves ONLY its own docs). MongoDB-backed.
+  - **AI Playground**: chat-test agents with real LLM answers grounded in knowledge, with sources + confidence.
+  - Lead AI Caller has an agent selector + SCRIPTED/AI-AGENT mode badge; assigned agent drives the call transcript, outcome and interest score.
+  - Stack: Emergent Universal LLM key (openai gpt-4.1-mini), TF-IDF retrieval in Mongo.
+
 ## Backlog (prioritized)
-- **P1** — verify Meta template + email + WhatsApp delivery live once real keys are entered.
-- **P2** — pagination/filters on audit logs; per-provider response-time history view.
+- **P1 — AI Agent Studio Phase 2:** Q&A training data, knowledge gaps/unknown questions, prompt versioning/rollback, per-agent analytics, self-learning loop from transcripts, QA review, vector embeddings (Qdrant/pgvector) upgrade.
+- **P1 — AI Agent Studio Phase 3 (needs Twilio + voice keys):** live inbound/outbound PSTN calling, STT/TTS streaming, recording, human handoff, campaign calling.
+- **P2** — a11y: add DialogDescription to dialogs; make Leads rows fully clickable.
   - Integrations: status-only view (Configured / Not configured) for WhatsApp, FB/IG, Resend email, Meta verify, LLM. Keys stay in backend/.env per user choice.
   - Auto-search: search keywords (chips), RSS source URL templates ({q}), schedule interval (1–24h), enable toggle, auto-publish toggle — drives a background scheduler in social_posts.py.
   - Templates: WhatsApp templates (add/edit/delete, EN/HI) + AI call opening scripts (EN/HI), DB-backed and used by send/bulk/call endpoints.
