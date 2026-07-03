@@ -157,8 +157,8 @@ class TestExportImport:
         requests.get(f"{API}/admin/integrations/export", headers=admin_h, timeout=20)
         after = requests.get(f"{API}/admin/integrations/audit", headers=admin_h, timeout=20).json()
         # Most recent should be export action
-        assert any(a.get("action") == "export" for a in after[:5])
-        assert len(after) >= len(before) + 1
+        assert any(a.get("action") == "export" for a in after["items"][:5])
+        assert after["total"] >= before["total"] + 1
 
     def test_roundtrip_export_reset_import_restores(self, admin_h):
         # Seed a unique value
@@ -206,8 +206,8 @@ class TestExportImport:
         requests.post(f"{API}/admin/integrations/import", headers=admin_h,
                       json={"settings": exp["settings"][:1]}, timeout=20)
         after = requests.get(f"{API}/admin/integrations/audit", headers=admin_h, timeout=20).json()
-        assert any(a.get("action") == "import" for a in after[:5])
-        assert len(after) >= len(before) + 1
+        assert any(a.get("action") == "import" for a in after["items"][:5])
+        assert after["total"] >= before["total"] + 1
 
 
 # =========================================================================
@@ -272,8 +272,9 @@ class TestRegression:
                           json={"stage": "new", "template_id": tpl_id}, timeout=60)
         assert r.status_code == 200, r.text
         data = r.json()
-        for key in ("ok", "sent", "failed", "stage"):
+        for key in ("ok", "sent", "failed"):
             assert key in data
+        assert "stage" in data or "stages" in data
         assert data["ok"] is True
 
     def test_bulk_calls_still_works_mock(self, admin_h):

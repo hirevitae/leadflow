@@ -27,6 +27,8 @@ def admin_headers(admin_token):
 
 # ---------------- initiate voice call (auth) ----------------
 def test_voice_call_returns_400_when_twilio_not_configured(admin_headers):
+    # Ensure clean state — remove any Twilio creds so we exercise the "not configured" path.
+    requests.delete(f"{API}/admin/integrations/twilio", headers=admin_headers, timeout=15)
     r = requests.post(f"{API}/leads/{LEAD_ID}/voice-call",
                       json={"language": "english", "agent_id": AGENT_ID},
                       headers=admin_headers, timeout=15)
