@@ -154,6 +154,18 @@ def _agent_system_prompt(agent: dict, context: str) -> str:
     return "\n".join(p for p in parts if p)
 
 
+async def _record_unknown(db, agent_id: str, question: str):
+    q = (question or "").strip()
+    if not q:
+        return
+    await db.agent_unknowns.update_one(
+        {"agent_id": agent_id, "question": q.lower()},
+        {"$setOnInsert": {"agent_id": agent_id, "question": q.lower(), "question_text": q,
+                          "created_at": datetime.now(timezone.utc).isoformat(), "resolved": False},
+         "$inc": {"count": 1}},
+        upsert=True)
+
+
 # ---------------- Router ----------------
 def build_agents_router(db, get_current_user):
     router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -195,10 +207,18 @@ def build_agents_router(db, get_current_user):
 
     @router.put("/{agent_id}")
     async def update_agent(agent_id: str, payload: AgentIn, user=Depends(get_current_user)):
+        existing = await db.ai_agents.find_one({"id": agent_id})
+        if not existing:
+            raise HTTPException(404, "Agent not found")
+        new_prompt = payload.system_prompt or ""
+        if (existing.get("system_prompt") or "") != new_prompt:
+            await db.agent_prompt_versions.insert_one({
+                "id": str(uuid.uuid4()), "agent_id": agent_id,
+                "system_prompt": existing.get("system_prompt") or "",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_by": user.get("name")})
         upd = {**payload.model_dump(), "updated_at": datetime.now(timezone.utc).isoformat()}
         r = await db.ai_agents.find_one_and_update({"id": agent_id}, {"$set": upd}, return_document=True)
-        if not r:
-            raise HTTPException(404, "Agent not found")
         return out(r)
 
     @router.delete("/{agent_id}")
@@ -271,8 +291,117 @@ def build_agents_router(db, get_current_user):
             logger.error(f"agent chat failed: {e}")
             raise HTTPException(502, f"AI response failed: {e}")
         confidence = round(sources[0]["score"], 2) if sources else 0.0
+        grounded = bool(sources) and confidence >= 0.12
+        await db.agent_chats.insert_one({
+            "id": str(uuid.uuid4()), "agent_id": agent_id, "question": payload.message,
+            "confidence": confidence, "grounded": grounded,
+            "created_at": datetime.now(timezone.utc).isoformat()})
+        if not grounded:
+            await _record_unknown(db, agent_id, payload.message)
         return {"reply": reply, "sources": [{"title": s["title"], "snippet": s["content"][:180], "score": s["score"]} for s in sources],
-                "confidence": confidence, "grounded": bool(sources)}
+                "confidence": confidence, "grounded": grounded}
+
+    # ---- Q&A training data ----
+    @router.get("/{agent_id}/qa")
+    async def list_qa(agent_id: str, user=Depends(get_current_user)):
+        docs = await db.agent_docs.find({"agent_id": agent_id, "type": "qa"}).sort("created_at", -1).to_list(500)
+        for d in docs:
+            d.pop("_id", None)
+        return docs
+
+    @router.post("/{agent_id}/qa")
+    async def add_qa(agent_id: str, payload: dict, user=Depends(get_current_user)):
+        q = (payload.get("question") or "").strip()
+        a = (payload.get("answer") or "").strip()
+        if not q or not a:
+            raise HTTPException(400, "Question and answer required")
+        res = await _store_source(agent_id, f"Q&A: {q[:60]}", f"Q: {q}\nA: {a}", "qa")
+        return {"ok": True, **res}
+
+    # ---- Knowledge gaps / unknown questions ----
+    @router.get("/{agent_id}/unknowns")
+    async def list_unknowns(agent_id: str, user=Depends(get_current_user)):
+        docs = await db.agent_unknowns.find({"agent_id": agent_id, "resolved": False}).sort("count", -1).to_list(500)
+        for d in docs:
+            d.pop("_id", None)
+        return docs
+
+    @router.post("/{agent_id}/unknowns/resolve")
+    async def resolve_unknown(agent_id: str, payload: dict, user=Depends(get_current_user)):
+        q = payload.get("question", "")
+        answer = (payload.get("answer") or "").strip()
+        if not answer:
+            raise HTTPException(400, "Answer required to teach the agent")
+        await _store_source(agent_id, f"Q&A: {q[:60]}", f"Q: {q}\nA: {answer}", "qa")
+        await db.agent_unknowns.update_one({"agent_id": agent_id, "question": q.lower()}, {"$set": {"resolved": True}})
+        return {"ok": True}
+
+    @router.delete("/{agent_id}/unknowns")
+    async def dismiss_unknown(agent_id: str, question: str, user=Depends(get_current_user)):
+        await db.agent_unknowns.update_one({"agent_id": agent_id, "question": question.lower()}, {"$set": {"resolved": True}})
+        return {"ok": True}
+
+    # ---- Prompt versioning ----
+    @router.get("/{agent_id}/prompt-versions")
+    async def prompt_versions(agent_id: str, user=Depends(get_current_user)):
+        docs = await db.agent_prompt_versions.find({"agent_id": agent_id}).sort("created_at", -1).to_list(50)
+        for d in docs:
+            d.pop("_id", None)
+        return docs
+
+    @router.post("/{agent_id}/prompt-versions/rollback")
+    async def rollback_prompt(agent_id: str, payload: dict, user=Depends(get_current_user)):
+        ver = await db.agent_prompt_versions.find_one({"id": payload.get("version_id"), "agent_id": agent_id})
+        if not ver:
+            raise HTTPException(404, "Version not found")
+        agent = await db.ai_agents.find_one({"id": agent_id})
+        await db.agent_prompt_versions.insert_one({
+            "id": str(uuid.uuid4()), "agent_id": agent_id, "system_prompt": agent.get("system_prompt") or "",
+            "created_at": datetime.now(timezone.utc).isoformat(), "created_by": user.get("name")})
+        await db.ai_agents.update_one({"id": agent_id}, {"$set": {"system_prompt": ver["system_prompt"], "updated_at": datetime.now(timezone.utc).isoformat()}})
+        return {"ok": True, "system_prompt": ver["system_prompt"]}
+
+    # ---- Calls + QA review ----
+    @router.get("/{agent_id}/calls")
+    async def agent_calls(agent_id: str, user=Depends(get_current_user)):
+        docs = await db.calls.find({"agent_id": agent_id}).sort("created_at", -1).to_list(200)
+        for d in docs:
+            d.pop("_id", None)
+        return docs
+
+    @router.post("/{agent_id}/calls/{call_id}/review")
+    async def review_call(agent_id: str, call_id: str, payload: dict, user=Depends(get_current_user)):
+        upd = {"qa_reviewed": True, "qa_reviewed_by": user.get("name")}
+        if "rating" in payload:
+            upd["qa_rating"] = int(payload["rating"])
+        if "flagged" in payload:
+            upd["qa_flagged"] = bool(payload["flagged"])
+        if "note" in payload:
+            upd["qa_note"] = payload["note"]
+        r = await db.calls.find_one_and_update({"id": call_id, "agent_id": agent_id}, {"$set": upd}, return_document=True)
+        if not r:
+            raise HTTPException(404, "Call not found")
+        return {"ok": True}
+
+    # ---- Per-agent analytics ----
+    @router.get("/{agent_id}/analytics")
+    async def analytics(agent_id: str, user=Depends(get_current_user)):
+        chats = await db.agent_chats.find({"agent_id": agent_id}).to_list(5000)
+        calls = await db.calls.find({"agent_id": agent_id}).to_list(5000)
+        unknowns = await db.agent_unknowns.count_documents({"agent_id": agent_id, "resolved": False})
+        kdocs = await db.agent_docs.count_documents({"agent_id": agent_id})
+        confs = [c.get("confidence", 0) for c in chats]
+        outcomes = Counter(c.get("outcome", "unknown") for c in calls)
+        top_q = Counter(c["question"].strip().lower() for c in chats if c.get("question"))
+        grounded_rate = round(100 * sum(1 for c in chats if c.get("grounded")) / len(chats)) if chats else 0
+        return {
+            "chats": len(chats), "calls": len(calls), "knowledge_docs": kdocs,
+            "unknown_questions": unknowns,
+            "avg_confidence": round(sum(confs) / len(confs), 2) if confs else 0,
+            "grounded_rate": grounded_rate,
+            "outcomes": dict(outcomes),
+            "top_questions": [{"q": q, "n": n} for q, n in top_q.most_common(8)],
+        }
 
     return router
 
