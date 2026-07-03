@@ -158,7 +158,8 @@ class NoteIn(BaseModel):
 
 
 class BulkWhatsAppIn(BaseModel):
-    stage: str
+    stage: Optional[str] = None
+    stages: Optional[List[str]] = None
     template_id: str
 
 
@@ -169,14 +170,16 @@ class WhatsAppTemplateIn(BaseModel):
 
 
 class BulkWhatsAppTemplateIn(BaseModel):
-    stage: str
+    stage: Optional[str] = None
+    stages: Optional[List[str]] = None
     template_name: str
     language: str = "en"
     params: List[str] = []
 
 
 class BulkCallsIn(BaseModel):
-    stage: str
+    stage: Optional[str] = None
+    stages: Optional[List[str]] = None
     language: str = "english"
 
 
@@ -744,15 +747,22 @@ async def trigger_call(lead_id: str, payload: CallIn, user=Depends(get_current_u
 
 
 # ---------------- Bulk Outreach ----------------
+def _resolve_stages(stages, stage):
+    target = list(stages) if stages else ([stage] if stage else [])
+    target = [s for s in target if s in PIPELINE_STAGES]
+    if not target:
+        raise HTTPException(400, "No valid stage selected")
+    return target
+
+
 @api_router.post("/bulk/whatsapp")
 async def bulk_whatsapp(payload: BulkWhatsAppIn, user=Depends(get_current_user)):
-    if payload.stage not in PIPELINE_STAGES:
-        raise HTTPException(400, "Invalid stage")
+    stages = _resolve_stages(payload.stages, payload.stage)
     templates = await get_templates()
     template = next((t for t in templates if t["id"] == payload.template_id), None)
     if not template:
         raise HTTPException(400, "Invalid template")
-    leads = await db.leads.find({"stage": payload.stage}).to_list(5000)
+    leads = await db.leads.find({"stage": {"$in": stages}}).to_list(5000)
     now = datetime.now(timezone.utc).isoformat()
     configured = await is_configured(db, "whatsapp")
     wa = await get_creds(db, "whatsapp") if configured else {}
@@ -778,17 +788,16 @@ async def bulk_whatsapp(payload: BulkWhatsAppIn, user=Depends(get_current_user))
             if lead.get("stage") == "new":
                 await db.leads.update_one({"id": lead["id"]}, {"$set": {"stage": "contacted"}})
             sent += 1
-    return {"ok": True, "sent": sent, "failed": failed, "stage": payload.stage}
+    return {"ok": True, "sent": sent, "failed": failed, "stages": stages}
 
 
 @api_router.post("/bulk/whatsapp-template")
 async def bulk_whatsapp_template(payload: BulkWhatsAppTemplateIn, user=Depends(get_current_user)):
-    if payload.stage not in PIPELINE_STAGES:
-        raise HTTPException(400, "Invalid stage")
+    stages = _resolve_stages(payload.stages, payload.stage)
     if not await is_configured(db, "whatsapp"):
         raise HTTPException(400, "WhatsApp not configured. Add real Meta credentials in Settings → Integrations")
     wa = await get_creds(db, "whatsapp")
-    leads = await db.leads.find({"stage": payload.stage}).to_list(5000)
+    leads = await db.leads.find({"stage": {"$in": stages}}).to_list(5000)
     now = datetime.now(timezone.utc).isoformat()
     sent, failed = 0, 0
     for lead in leads:
@@ -812,16 +821,15 @@ async def bulk_whatsapp_template(payload: BulkWhatsAppTemplateIn, user=Depends(g
             if lead.get("stage") == "new":
                 await db.leads.update_one({"id": lead["id"]}, {"$set": {"stage": "contacted"}})
             sent += 1
-    return {"ok": True, "sent": sent, "failed": failed, "stage": payload.stage}
+    return {"ok": True, "sent": sent, "failed": failed, "stages": stages}
 
 
 @api_router.post("/bulk/calls")
 async def bulk_calls(payload: BulkCallsIn, user=Depends(get_current_user)):
-    if payload.stage not in PIPELINE_STAGES:
-        raise HTTPException(400, "Invalid stage")
+    stages = _resolve_stages(payload.stages, payload.stage)
     scripts = await get_call_scripts()
     lang = payload.language if payload.language in scripts else "english"
-    leads = await db.leads.find({"stage": payload.stage}).to_list(5000)
+    leads = await db.leads.find({"stage": {"$in": stages}}).to_list(5000)
     now = datetime.now(timezone.utc).isoformat()
     called = 0
     for lead in leads:
@@ -840,7 +848,7 @@ async def bulk_calls(payload: BulkCallsIn, user=Depends(get_current_user)):
         if lead.get("stage") in ("new", "contacted"):
             await db.leads.update_one({"id": lead["id"]}, {"$set": {"stage": "interested"}})
         called += 1
-    return {"ok": True, "called": called, "stage": payload.stage}
+    return {"ok": True, "called": called, "stages": stages}
 
 
 # ---------------- Tasks (Follow-ups) ----------------

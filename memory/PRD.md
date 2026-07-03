@@ -30,7 +30,8 @@
 - Analytics: stage bar chart, source pie chart, daily new-leads line chart, conversion + win rate KPIs.
 
 ## Implemented (Jun 2026)
-- **Integration Module — P2 polish:** Audit Logs now paginated (25/page, Prev/Next, total count) with **provider + action filters** (`GET /api/admin/integrations/audit?provider=&action=&limit=&skip=` → `{items,total,limit,skip}`). Health response-time chart has a **per-provider filter** (`/history?provider=`). Verified (20/20 integration tests still pass; filters/pagination curl-checked).
+- **Bulk Outreach — multi-category selection:** the dialog now lets you pick **multiple stage groups at once** (checkbox grid with per-stage counts + "Select all/Clear all"); combined count preview. Backend bulk endpoints (`/bulk/whatsapp`, `/bulk/whatsapp-template`, `/bulk/calls`) accept a `stages: []` array (query via `$in`) while staying backward-compatible with single `stage`. Verified via curl + UI.
+- **Integration Module — P2 polish:** Audit Logs paginated + provider/action filters; Health chart per-provider filter.
 - **Integration Module — Phase 2 + P0 Meta templates** (57/57 tests):
   - Health Dashboard tab (status grid, last-verified, response time, last error, "Run all tests") + recharts response-time chart.
   - Audit Logs tab (masked old/new values, action badges, updated_by, IP).

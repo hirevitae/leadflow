@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Checkbox } from "@/components/ui/checkbox";
 import { api, formatApiError, STAGES } from "@/lib/api";
 import { toast } from "sonner";
 import { Megaphone, MessageCircle, PhoneCall } from "lucide-react";
@@ -10,7 +11,7 @@ import { Megaphone, MessageCircle, PhoneCall } from "lucide-react";
 export default function BulkOutreachDialog({ onDone }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState("whatsapp");
-  const [stage, setStage] = useState("new");
+  const [stages, setStages] = useState(["new"]);
   const [templateId, setTemplateId] = useState("");
   const [language, setLanguage] = useState("english");
   const [templates, setTemplates] = useState([]);
@@ -55,10 +56,13 @@ export default function BulkOutreachDialog({ onDone }) {
     // eslint-disable-next-line
   }, [open]);
 
-  const target = counts[stage] ?? 0;
+  const target = stages.reduce((sum, k) => sum + (counts[k] ?? 0), 0);
+  const allSelected = stages.length === STAGES.length;
+  const toggleStage = (k) => setStages((p) => p.includes(k) ? p.filter((x) => x !== k) : [...p, k]);
+  const toggleAll = () => setStages(allSelected ? [] : STAGES.map((s) => s.key));
 
   const submit = async () => {
-    if (target === 0) { toast.error("No leads in this stage"); return; }
+    if (target === 0) { toast.error("No leads in the selected stage groups"); return; }
     setSending(true);
     try {
       if (mode === "whatsapp") {
@@ -66,15 +70,15 @@ export default function BulkOutreachDialog({ onDone }) {
           if (!metaName) { toast.error("Pick an approved template"); setSending(false); return; }
           const t = metaTemplates.find((x) => x.name === metaName);
           const res = await api.post("/bulk/whatsapp-template", {
-            stage, template_name: metaName, language: t?.language || "en", params: metaParams,
+            stages, template_name: metaName, language: t?.language || "en", params: metaParams,
           });
           toast.success(`Template sent to ${res.data.sent} lead${res.data.sent === 1 ? "" : "s"}${res.data.failed ? `, ${res.data.failed} failed` : ""}`);
         } else {
-          const res = await api.post("/bulk/whatsapp", { stage, template_id: templateId });
+          const res = await api.post("/bulk/whatsapp", { stages, template_id: templateId });
           toast.success(`Sent WhatsApp to ${res.data.sent} lead${res.data.sent === 1 ? "" : "s"}`);
         }
       } else {
-        const res = await api.post("/bulk/calls", { stage, language });
+        const res = await api.post("/bulk/calls", { stages, language });
         toast.success(`Placed AI calls to ${res.data.called} lead${res.data.called === 1 ? "" : "s"}`);
       }
       onDone?.();
@@ -110,15 +114,21 @@ export default function BulkOutreachDialog({ onDone }) {
 
           <div className="space-y-4 pt-4">
             <div className="space-y-1.5">
-              <label className="text-sm font-medium text-zinc-700">Lead stage group</label>
-              <Select value={stage} onValueChange={setStage}>
-                <SelectTrigger data-testid="bulk-stage-select"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {STAGES.map((s) => (
-                    <SelectItem key={s.key} value={s.key}>{s.label} ({counts[s.key] ?? 0})</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-zinc-700">Lead stage groups</label>
+                <button type="button" className="text-xs text-blue-600 hover:underline" onClick={toggleAll} data-testid="bulk-select-all-stages">
+                  {allSelected ? "Clear all" : "Select all"}
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2" data-testid="bulk-stages">
+                {STAGES.map((s) => (
+                  <label key={s.key} className={`flex items-center gap-2 p-2 rounded-md border cursor-pointer transition-colors ${stages.includes(s.key) ? "border-blue-300 bg-blue-50" : "border-zinc-200 hover:bg-zinc-50"}`} data-testid={`bulk-stage-${s.key}`}>
+                    <Checkbox checked={stages.includes(s.key)} onCheckedChange={() => toggleStage(s.key)} data-testid={`bulk-stage-check-${s.key}`} />
+                    <span className="text-sm flex-1">{s.label}</span>
+                    <span className="text-xs text-zinc-400">{counts[s.key] ?? 0}</span>
+                  </label>
+                ))}
+              </div>
             </div>
 
             <TabsContent value="whatsapp" className="m-0 space-y-2">
@@ -172,8 +182,8 @@ export default function BulkOutreachDialog({ onDone }) {
 
             <div className="rounded-md bg-blue-50 border border-blue-100 p-3 text-sm text-blue-800" data-testid="bulk-count-preview">
               {target > 0
-                ? <>This will {mode === "whatsapp" ? "message" : "call"} <span className="font-semibold">{target}</span> lead{target === 1 ? "" : "s"} in the “{STAGES.find((s) => s.key === stage)?.label}” stage.</>
-                : <>No leads in this stage group.</>}
+                ? <>This will {mode === "whatsapp" ? "message" : "call"} <span className="font-semibold">{target}</span> lead{target === 1 ? "" : "s"} across <span className="font-semibold">{stages.length}</span> stage group{stages.length === 1 ? "" : "s"}.</>
+                : <>No leads in the selected stage group{stages.length === 1 ? "" : "s"}.</>}
             </div>
           </div>
         </Tabs>
