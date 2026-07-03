@@ -229,15 +229,24 @@ def build_voice_router(db, get_current_user, add_activity):
             await db.calls.update_one({"id": cid}, {"$push": {"transcript": {"speaker": "Customer", "text": speech}}})
 
         # Human handoff
-        if speech and _matches(speech, HANDOFF_WORDS) and creds.get("handoff_number"):
-            line = "Sure, connecting you to a member of our team now. Please hold."
+        if speech and _matches(speech, HANDOFF_WORDS):
+            if creds.get("handoff_number"):
+                line = "Sure, connecting you to a member of our team now. Please hold."
+                await _speak(resp, base, line, language)
+                await db.calls.update_one({"id": cid}, {
+                    "$push": {"transcript": {"speaker": "AI", "text": line}},
+                    "$set": {"handoff": True, "outcome": "callback"}})
+                dial = Dial(record="record-from-answer")
+                dial.number(creds["handoff_number"])
+                resp.append(dial)
+                return Response(content=str(resp), media_type="application/xml")
+            line = ("I'm sorry, I can't transfer you to a colleague right now, but I'll "
+                    "arrange for someone to call you back shortly. Is there anything else I can help with?")
             await _speak(resp, base, line, language)
             await db.calls.update_one({"id": cid}, {
                 "$push": {"transcript": {"speaker": "AI", "text": line}},
-                "$set": {"handoff": True, "outcome": "callback"}})
-            dial = Dial(record="record-from-answer")
-            dial.number(creds["handoff_number"])
-            resp.append(dial)
+                "$set": {"handoff_requested": True, "outcome": "callback"}})
+            _gather(resp, base, cid, language)
             return Response(content=str(resp), media_type="application/xml")
 
         # End of conversation

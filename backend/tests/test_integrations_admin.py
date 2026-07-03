@@ -19,7 +19,7 @@ ADMIN_PASSWORD = "admin123"
 COUNSELLOR_EMAIL = "counsellor1@leadflow.com"
 COUNSELLOR_PASSWORD = "test123"
 
-PROVIDERS = ["whatsapp", "facebook", "instagram", "email", "ai"]
+PROVIDERS = ["whatsapp", "facebook", "instagram", "email", "ai", "twilio", "elevenlabs", "openai"]
 
 
 def _login(email, password):
