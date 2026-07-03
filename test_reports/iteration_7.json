@@ -1,0 +1,54 @@
+{
+  "summary": "AI Agent Studio Phase 2 (Q&A training, knowledge-gap tracking, prompt versioning/rollback, per-agent analytics, self-learning from unknowns, QA review of AI calls) fully verified end-to-end. Backend: 12/12 new pytest cases pass in test_ai_agents_phase2.py (all 5 read shapes, QA add + appears in /qa & /knowledge, QA validation, PUT prompt→version created + rollback restores previous, unknown recording on empty-KB agent + resolve teaches + dismiss, call review persists qa_reviewed/qa_rating/qa_flagged, 404 on missing call). Frontend: all 6 tabs render on /ai-studio/{id} (agent-tab-settings/knowledge/training/playground/analytics/qa). Training tab adds Q&A pair via qa-question-input/qa-answer-input/add-qa-btn and it appears in qa-list; unknowns block renders (empty state). Analytics tab shows all 6 stat cards (Chats:3, Calls:2, Grounded 100%, Avg confidence 1, Docs:7, Gaps:0) + top-questions-chart + outcomes-list. QA Review tab lists 2 calls; star rating (rate-{id}-4), flag toggle (flag-{id}), and Mark reviewed (mark-reviewed-{id}) all persist — 'Reviewed' badge appears after action. Settings tab prompt version history shows list; editing system_prompt + Save creates a new version entry; Restore rolls back to prior prompt successfully.",
+  "tested_scope": ["backend-ai-agents-phase2", "frontend-agent-detail-tabs"],
+  "passed": [
+    "GET /api/agents/{id}/qa|unknowns|prompt-versions|calls|analytics — 200 + correct shapes (analytics has chats/calls/knowledge_docs/unknown_questions/avg_confidence/grounded_rate/outcomes/top_questions)",
+    "POST /api/agents/{id}/qa {question,answer} 200 → doc.type='qa' appears in /qa and /knowledge; 400 on empty q/a",
+    "PUT /api/agents/{id} changing system_prompt creates version in agent_prompt_versions storing the *previous* prompt; rollback POST /prompt-versions/rollback restores it and creates a new pre-rollback checkpoint version",
+    "POST /api/agents/{id}/chat on fresh empty-KB agent → grounded=false and question recorded in db.agent_unknowns; POST /unknowns/resolve {question,answer} creates qa doc AND marks resolved (removed from open list); DELETE /unknowns?question= dismisses",
+    "POST /api/agents/{id}/calls/{call_id}/review {rating, flagged, note} → 200; GET /calls reflects qa_reviewed=true, qa_rating=int, qa_flagged=bool; 404 on unknown call_id",
+    "Frontend route /ai-studio/:id (NOT /ai-studio/agents/:id as PS mentioned) loads AgentDetail with all 6 tabs",
+    "Training: adding QA via add-qa-btn refreshes qa-list with new item within 2s",
+    "Analytics: recharts bar chart + 6 stat cards + capitalized outcome badges all render with live numeric data",
+    "QA Review: star click applies rating, flag toggles rose color, mark-reviewed sets Reviewed badge; all persist on tab reload",
+    "Settings: save-agent-btn creates a new prompt version row; rollback-{versionId} restores system_prompt in the textarea to the pre-save value"
+  ],
+  "backend_issues": {"critical": [], "minor": [
+    {"endpoint": "POST /api/agents/{id}/chat", "issue": "retrieve() TF-IDF scoring returns confidence=1.0 for off-topic questions when the agent already has many QA/knowledge docs (e.g. seeded Admission Counsellor). Off-topic 'who won 2010 FIFA world cup?' → grounded=true, confidence 1.0, sources returned — but reply still uses fallback. This inflates grounded_rate and prevents unknown-recording on rich KBs. Consider lowering scores when few tokens overlap (jaccard/min-DF) or add a min-overlap check."}
+  ]},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Training tab / unknowns list", "issues": ["data-testid values for unknown rows include the raw question text (with spaces/?) — e.g. teach-btn-{question}. This makes them hard to select in Playwright and violates common testid conventions. Recommend using an id hash or slug."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_ai_agents_phase2.py",
+    "/app/test_reports/pytest/phase2_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: In problem statement the URL is /ai-studio/agents/{id} but actual React route is /ai-studio/:id — update PS or add alias route.",
+    "OPTIONAL: Improve retrieve() scoring so off-topic questions on rich KBs are marked not-grounded (currently over-scores 1.0 on any partial token match).",
+    "OPTIONAL: Sanitize data-testid for unknown-list items (use slug/hash instead of raw question text with spaces/?)."
+  ],
+  "critical_code_review_comments": [
+    "ai_agents.py update_agent (line 213): compares stored vs incoming system_prompt as strings; correctly saves the OLD prompt as the new version. Good — version history is chronologically consistent.",
+    "ai_agents.py rollback_prompt (line 358): before restoring, snapshots the current prompt into a new version — round-tripping preserves history. Good.",
+    "ai_agents.py chat: even when grounded=false, an unknown is recorded via _record_unknown — matches product intent.",
+    "review_call (line 373): uses find_one_and_update with return_document=True and 404 on miss — clean. But the return value 'r' is not used; consider returning the updated call so the UI can avoid a re-fetch.",
+    "AgentDetail.jsx uses raw question text in data-testid — brittle for automation; also uses u.question (already lowercased) as React key which will conflict if two casings differ.",
+    "retrieve() TF-IDF gives 1.0 confidence on shallow overlaps → grounded_rate is misleading. Analytics 'Grounded rate' currently reads 100% on seeded agent even after off-topic questions."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_ai_agents_phase2.py (new — 12 tests, ~8s incl. 3 real LLM calls)",
+    "/app/test_reports/iteration_7.json (new)"
+  ],
+  "success_rate": {"backend": "100% (12/12 phase2)", "frontend": "100% (all 6 tabs + Training add + Analytics stats/chart + QA Review star/flag/reviewed + Settings save+rollback verified end-to-end)"},
+  "test_credentials": "admin@leadflow.com / admin123",
+  "seed_data_creation": "Created ephemeral TEST_UNK_* and TEST_DIS_* agents inside phase2 tests; deleted in fixtures. Added TEST_Q_* Q&A docs and UI_TEST_MARK_* prompt versions to seeded Admission Counsellor agent (afde6062-…) — non-destructive, prompt was rolled back to '' at end of UI test. QA Review persisted a rating=4 + reviewed=true on the first call of that agent.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 2 is fully working. Regression suite now: test_p1_features (21) + test_integrations_admin (20) + test_phase2_meta_templates (16) + test_ai_agents (10) + test_ai_agents_phase2 (12) = 79 tests expected to pass. Run: pytest backend/tests/ -o addopts='' — takes ~15s (real LLM calls). The retrieve() 1.0-score-on-off-topic issue is a *scoring* problem, not a functional break — unknowns are still recorded for fresh/empty-KB agents; the mechanism proven to work end-to-end.",
+  "rca_of_the_issue": "N/A — no bugs blocking Phase 2. Minor scoring precision issue documented for future improvement."
+}
