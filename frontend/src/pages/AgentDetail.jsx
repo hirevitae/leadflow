@@ -33,6 +33,7 @@ export default function AgentDetail() {
   const [analytics, setAnalytics] = useState(null);
   const [calls, setCalls] = useState([]);
   const [versions, setVersions] = useState([]);
+  const [recUrls, setRecUrls] = useState({});
 
   const load = async () => {
     try {
@@ -128,6 +129,12 @@ export default function AgentDetail() {
       await api.post(`/agents/${id}/calls/${callId}/review`, patch);
       toast.success("Review saved"); loadCalls();
     } catch (e) { toast.error("Failed"); }
+  };
+  const loadRecording = async (callId) => {
+    try {
+      const res = await api.get(`/voice/calls/${callId}/recording`, { responseType: "blob" });
+      setRecUrls((r) => ({ ...r, [callId]: URL.createObjectURL(res.data) }));
+    } catch (e) { toast.error("Recording not available"); }
   };
 
   if (!agent) return <div className="p-8 text-zinc-500">Loading…</div>;
@@ -355,6 +362,17 @@ export default function AgentDetail() {
                   {c.qa_flagged && <Badge className="bg-rose-100 text-rose-700 text-[11px]">Flagged</Badge>}
                 </div>
                 <div className="text-sm text-zinc-600 italic">{c.summary}</div>
+                {c.recording_url && (
+                  <div data-testid={`recording-${c.id}`}>
+                    {recUrls[c.id] ? (
+                      <audio controls src={recUrls[c.id]} className="w-full h-9" data-testid={`recording-player-${c.id}`} />
+                    ) : (
+                      <Button variant="outline" size="sm" onClick={() => loadRecording(c.id)} data-testid={`load-recording-${c.id}`}>
+                        <Phone className="w-3.5 h-3.5 mr-1" /> Load call recording
+                      </Button>
+                    )}
+                  </div>
+                )}
                 <div className="max-h-48 overflow-y-auto space-y-1.5 bg-zinc-50 rounded-md p-3" data-testid={`transcript-${c.id}`}>
                   {(c.transcript || []).map((t, i) => (
                     <div key={i} className="text-sm"><span className={`font-medium ${t.speaker === "AI" ? "text-blue-700" : "text-zinc-700"}`}>{t.speaker}:</span> <span className="text-zinc-700">{t.text}</span></div>

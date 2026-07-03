@@ -1,0 +1,33 @@
+{
+  "summary": "Phase 3 (live outbound voice via Twilio) tested end-to-end without a real Twilio account. Backend: 11/11 new tests pass in test_voice_calls_phase3.py — POST /leads/{id}/voice-call returns 400 with 'Twilio is not configured' (never 500); public webhook /voice/twiml/entry returns valid TwiML containing <Gather input=\"speech\"> + <Say> greeting; /voice/twiml/turn with SpeechResult returns AI <Say> + next <Gather> (real LLM call ~4s); END_WORDS ('no thanks goodbye') triggers <Hangup/>; silent=1 with no SpeechResult re-prompts; /voice/status and /voice/recording callbacks return 204 for nonexistent cids without crashing; /voice/audio/{bad} → 404; /voice/calls/{bad}/recording (auth) → 404; GET /admin/integrations includes twilio provider with 'handoff_number' field. Frontend: Lead detail /leads/{id} shows both start-call-btn (Simulate) and start-live-call-btn (Live Call); clicking Live Call surfaces toast 'Twilio is not configured. Add credentials in Settings → Integrations.' and UI does not hang (400 error handled gracefully). Simulate flow works end-to-end (transcript streamed, summary + outcome rendered). AI Studio → agent → QA Review tab renders both existing calls without errors; no load-recording-* button appears because none of the mock calls have recording_url (matches spec — only shows when recording_url exists).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_voice_calls_phase3.py",
+    "/app/test_reports/pytest/phase3_voice_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Update stale assertions in test_integrations_admin.py (test_list_returns_five_providers, test_health_lists_all_providers) — they hard-code the old 5-provider set and now fail because twilio/elevenlabs/openai were correctly added. Change the expected set to include all 8 providers.",
+    "OPTIONAL: test_phase2_meta_templates.py has 3 pre-existing failures (unhashable slice + 'stage' key) unrelated to Phase 3 — schema drift in bulk_whatsapp response ({'stages': [...]} vs 'stage'). Refresh those tests."
+  ],
+  "critical_code_review_comments": [
+    "voice_calls.py:186 initiate_voice_call raises 502 on Twilio client failure but the call doc remains with status=failed — good. However the 400 path (line 159) checks is_configured() BEFORE creating the doc, so no orphan 'initiating' rows are left. Clean.",
+    "voice_calls.py:104 _gather appends a resp.redirect *after* the <Gather>; Twilio will only reach it if Gather times out — correct pattern for silent re-prompt.",
+    "voice_calls.py:232 handoff branch requires creds.get('handoff_number'); if operator forgets to set it, HANDOFF_WORDS just fall through to normal AI reply (no error). Consider a spoken fallback 'I can't connect you to a human right now' when handoff_number missing but handoff was requested — currently invisible to users.",
+    "voice_calls.py:106 _agent_reply imports emergentintegrations inside the function (fine for lazy load) but does so on every turn; consider top-level import for micro perf.",
+    "voice_calls.py:270 _finalize is called from both twiml_turn end-branch AND voice_status completed-branch; guarded by finalized flag — good idempotency.",
+    "voice_calls.py:266-279 voice_status: the last db.calls.update_one sets live=False even after _finalize already ran (redundant write but not harmful).",
+    "AICallerPanel.jsx correctly wires start-live-call-btn; error toast surfaces from axios interceptor. UI does not enter a stuck 'live' state on 400 — confirmed visually."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_voice_calls_phase3.py (new — 11 tests, ~5s)",
+    "/app/test_reports/iteration_8.json (new)"
+  ],
+  "success_rate": {"backend": "100% (11/11 phase3 new; 85/90 full regression — 5 pre-existing stale tests unrelated to phase 3)", "frontend": "100% (Simulate + Live Call buttons, error handling, QA Review tab all verified)"},
+  "test_credentials": "admin@leadflow.com / admin123",
+  "seed_data_creation": "Ephemeral voice_audio docs may exist if ElevenLabs was ever configured (it isn't). test_twiml_turn_speech_gets_ai_reply consumes ~1 real LLM call per run.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 3 voice fully verified minus a real Twilio call (no live account). Full regression: 85/90 passing; 5 pre-existing stale test failures in test_integrations_admin.py (2) and test_phase2_meta_templates.py (3) are NOT Phase 3 regressions — they are tests that were written before twilio/elevenlabs/openai providers were added or when bulk_whatsapp response shape changed. Recommend main agent update those test assertions in a housekeeping pass. New regression file to run: pytest backend/tests/test_voice_calls_phase3.py — requires REACT_APP_BACKEND_URL env.",
+  "rca_of_the_issue": "N/A — no bugs found in Phase 3 implementation."
+}

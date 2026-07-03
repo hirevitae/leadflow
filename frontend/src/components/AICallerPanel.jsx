@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api, formatApiError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Phone, PhoneOff, Languages } from "lucide-react";
+import { Phone, PhoneCall, Languages, Radio } from "lucide-react";
 
 export default function AICallerPanel({ lead, onActivity }) {
   const [lang, setLang] = useState(lead?.language === "hindi" ? "hindi" : "english");
@@ -13,6 +13,8 @@ export default function AICallerPanel({ lead, onActivity }) {
   const [latest, setLatest] = useState(null);
   const [agents, setAgents] = useState([]);
   const [agentId, setAgentId] = useState("none");
+  const [liveStatus, setLiveStatus] = useState(null);
+  const pollRef = useRef(null);
 
   const load = async () => {
     const { data } = await api.get(`/leads/${lead.id}/calls`);
@@ -21,6 +23,7 @@ export default function AICallerPanel({ lead, onActivity }) {
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [lead.id]);
   useEffect(() => { api.get("/agents").then(({ data }) => setAgents(data)).catch(() => {}); }, []);
+  useEffect(() => () => clearInterval(pollRef.current), []);
 
   const startCall = async () => {
     setActive(true);
@@ -46,6 +49,36 @@ export default function AICallerPanel({ lead, onActivity }) {
   };
 
   const usingAgent = agentId !== "none";
+
+  const startLiveCall = async () => {
+    setActive(true); setTranscript([]); setLiveStatus("ringing");
+    try {
+      const body = { language: lang };
+      if (agentId !== "none") body.agent_id = agentId;
+      const { data } = await api.post(`/leads/${lead.id}/voice-call`, body);
+      const cid = data.id;
+      toast.success("Calling the lead's phone…");
+      const done = ["completed", "failed", "busy", "no-answer", "canceled"];
+      pollRef.current = setInterval(async () => {
+        try {
+          const { data: cl } = await api.get(`/leads/${lead.id}/calls`);
+          const c = cl.find((x) => x.id === cid);
+          if (!c) return;
+          setTranscript(c.transcript || []);
+          setLiveStatus(c.status);
+          if (done.includes(c.status) || c.live === false) {
+            clearInterval(pollRef.current);
+            setActive(false); setLiveStatus(null); setLatest(c);
+            await load(); onActivity?.();
+            toast.success(`Call ${c.status}`);
+          }
+        } catch { /* keep polling */ }
+      }, 3000);
+    } catch (e) {
+      setActive(false); setLiveStatus(null);
+      toast.error(formatApiError(e.response?.data?.detail) || "Could not place call");
+    }
+  };
 
   return (
     <div className="border border-zinc-200 rounded-lg bg-white flex flex-col h-[560px]" data-testid="ai-caller-panel">
@@ -73,13 +106,20 @@ export default function AICallerPanel({ lead, onActivity }) {
         </Select>
 
         {!active ? (
-          <Button onClick={startCall} className="bg-blue-600 hover:bg-blue-700 ml-auto" data-testid="start-call-btn">
-            <Phone className="w-4 h-4 mr-1.5" /> Start AI Call
-          </Button>
+          <div className="ml-auto flex items-center gap-2">
+            <Button onClick={startCall} variant="outline" data-testid="start-call-btn">
+              <Phone className="w-4 h-4 mr-1.5" /> Simulate
+            </Button>
+            <Button onClick={startLiveCall} className="bg-blue-600 hover:bg-blue-700" data-testid="start-live-call-btn">
+              <PhoneCall className="w-4 h-4 mr-1.5" /> Live Call
+            </Button>
+          </div>
         ) : (
           <div className="ml-auto flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 pulse-ring" />
-            <span className="text-sm text-emerald-700 font-medium">Call active</span>
+            <span className="text-sm text-emerald-700 font-medium" data-testid="live-call-status">
+              {liveStatus ? <span className="inline-flex items-center gap-1"><Radio className="w-3.5 h-3.5" /> {liveStatus}</span> : "Call active"}
+            </span>
           </div>
         )}
       </div>

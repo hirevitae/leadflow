@@ -1182,6 +1182,9 @@ app.include_router(social_router)
 app.include_router(build_integrations_router(db, get_current_user, require_admin))
 app.include_router(build_agents_router(db, get_current_user))
 
+from voice_calls import build_voice_router
+app.include_router(build_voice_router(db, get_current_user, _add_activity))
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,

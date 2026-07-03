@@ -79,6 +79,7 @@ PROVIDERS = {
             {"key": "api_key", "label": "API Key (SID, optional)", "secret": True},
             {"key": "api_secret", "label": "API Secret (optional)", "secret": True},
             {"key": "phone_number", "label": "Phone Number (E.164)", "secret": False},
+            {"key": "handoff_number", "label": "Human Handoff Number (E.164)", "secret": False},
         ],
         "required": ["account_sid", "auth_token", "phone_number"],
     },
