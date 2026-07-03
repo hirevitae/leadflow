@@ -11,6 +11,8 @@ export default function AICallerPanel({ lead, onActivity }) {
   const [active, setActive] = useState(false);
   const [transcript, setTranscript] = useState([]);
   const [latest, setLatest] = useState(null);
+  const [agents, setAgents] = useState([]);
+  const [agentId, setAgentId] = useState("none");
 
   const load = async () => {
     const { data } = await api.get(`/leads/${lead.id}/calls`);
@@ -18,13 +20,15 @@ export default function AICallerPanel({ lead, onActivity }) {
     if (data[0]) setLatest(data[0]);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [lead.id]);
+  useEffect(() => { api.get("/agents").then(({ data }) => setAgents(data)).catch(() => {}); }, []);
 
   const startCall = async () => {
     setActive(true);
     setTranscript([]);
     try {
-      const { data } = await api.post(`/leads/${lead.id}/calls`, { language: lang });
-      // Simulate live transcript reveal
+      const body = { language: lang };
+      if (agentId !== "none") body.agent_id = agentId;
+      const { data } = await api.post(`/leads/${lead.id}/calls`, body);
       for (let i = 0; i < data.transcript.length; i++) {
         await new Promise((r) => setTimeout(r, 700));
         setTranscript((t) => [...t, data.transcript[i]]);
@@ -41,21 +45,30 @@ export default function AICallerPanel({ lead, onActivity }) {
     }
   };
 
+  const usingAgent = agentId !== "none";
+
   return (
     <div className="border border-zinc-200 rounded-lg bg-white flex flex-col h-[560px]" data-testid="ai-caller-panel">
       <div className="px-4 py-3 border-b border-zinc-200 flex items-center gap-2">
         <Phone className="w-4 h-4 text-blue-600" />
         <div className="font-display font-semibold text-sm">AI Caller</div>
-        <span className="ml-auto text-xs px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">MOCK</span>
+        <span className="ml-auto text-xs px-2 py-0.5 rounded border" style={{}} data-testid="ai-caller-mode">{usingAgent ? <span className="text-emerald-700 bg-emerald-50 border-emerald-200 px-2 py-0.5 rounded">AI AGENT</span> : <span className="text-amber-700 bg-amber-50 border-amber-200 px-2 py-0.5 rounded">SCRIPTED</span>}</span>
       </div>
 
-      <div className="px-4 py-3 border-b border-zinc-200 flex items-center gap-3">
+      <div className="px-4 py-3 border-b border-zinc-200 flex items-center gap-2 flex-wrap">
         <Languages className="w-4 h-4 text-zinc-500" />
         <Select value={lang} onValueChange={setLang} disabled={active}>
-          <SelectTrigger className="w-36" data-testid="call-language-select"><SelectValue /></SelectTrigger>
+          <SelectTrigger className="w-32" data-testid="call-language-select"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="english">English</SelectItem>
             <SelectItem value="hindi">हिन्दी (Hindi)</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={agentId} onValueChange={setAgentId} disabled={active}>
+          <SelectTrigger className="w-44" data-testid="call-agent-select"><SelectValue placeholder="AI Agent" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="none">No agent (scripted)</SelectItem>
+            {agents.map((a) => <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>)}
           </SelectContent>
         </Select>
 

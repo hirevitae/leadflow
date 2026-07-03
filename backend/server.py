@@ -13,6 +13,7 @@ import asyncio
 import resend
 from meta_integrations import _send_whatsapp_text, _send_whatsapp_template, fetch_meta_templates
 from integrations_admin import build_integrations_router, migrate_env_to_db, get_creds, is_configured, get_value as get_integration_value
+from ai_agents import build_agents_router, generate_call
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
@@ -151,6 +152,7 @@ class MessageIn(BaseModel):
 class CallIn(BaseModel):
     language: str = "english"  # english/hindi
     script_id: Optional[str] = None
+    agent_id: Optional[str] = None
 
 
 class NoteIn(BaseModel):
@@ -722,6 +724,33 @@ async def trigger_call(lead_id: str, payload: CallIn, user=Depends(get_current_u
     if not lead:
         raise HTTPException(404, "Lead not found")
     now = datetime.now(timezone.utc).isoformat()
+    # If an AI Agent is assigned, run a REAL knowledge-grounded conversation via the LLM
+    agent = None
+    if payload.agent_id:
+        agent = await db.ai_agents.find_one({"id": payload.agent_id})
+    lang = payload.language
+    if agent:
+        try:
+            result = await generate_call(db, agent, lead, lang)
+            call_doc = {
+                "id": str(uuid.uuid4()), "lead_id": lead_id, "language": lang,
+                "agent_id": agent["id"], "agent_name": agent["name"],
+                "status": "completed", "duration_sec": max(60, len(result["transcript"]) * 14),
+                "transcript": result["transcript"], "summary": result["summary"],
+                "outcome": result["outcome"], "sources": result.get("sources", []),
+                "created_at": now,
+            }
+            await db.calls.insert_one(call_doc)
+            await _add_activity(lead_id, "ai_call", f"AI call by {agent['name']} ({lang}) — outcome: {result['outcome']}", user)
+            if result.get("interest_score") is not None:
+                await db.leads.update_one({"id": lead_id}, {"$set": {"interest_score": result["interest_score"]}})
+            if lead.get("stage") in ("new", "contacted") and result["outcome"] in ("interested", "enrolled", "callback"):
+                await db.leads.update_one({"id": lead_id}, {"$set": {"stage": "interested"}})
+            call_doc.pop("_id", None)
+            return call_doc
+        except Exception as e:
+            logger.error(f"Agent call failed, falling back to script: {e}")
+    # Fallback: scripted mock (no agent assigned)
     scripts = await get_call_scripts()
     lang = payload.language if payload.language in scripts else "english"
     opening = scripts[lang].replace("{name}", lead.get("name") or "").replace("{course}", lead.get("course") or "the course")
@@ -1151,6 +1180,7 @@ social_router = build_social_router(db, get_current_user)
 app.include_router(social_router)
 
 app.include_router(build_integrations_router(db, get_current_user, require_admin))
+app.include_router(build_agents_router(db, get_current_user))
 
 app.add_middleware(
     CORSMiddleware,

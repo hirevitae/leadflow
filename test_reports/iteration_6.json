@@ -1,0 +1,59 @@
+{
+  "summary": "Phase 1 AI Agent Studio (agents CRUD + KB + RAG chat + REAL grounded LLM lead call) fully tested end-to-end. 10/10 new backend tests pass + 41/41 regression (test_p1_features + test_integrations_admin) = 51/51. Frontend AI Studio (list, create dialog, detail with Settings/Knowledge/Playground tabs) and AICallerPanel (agent selector + mode badge SCRIPTED↔AI AGENT) all functional; playground returns a real knowledge-grounded LLM reply with Sources + confidence; the AI call generates a real multi-turn transcript that references the uploaded knowledge (INR 25,000 fee, Saturday demo) and NOT the old canned mock text.",
+  "tested_scope": ["backend-ai-agents", "backend-regression", "frontend-ai-studio", "frontend-ai-caller-panel"],
+  "passed": [
+    "GET /api/agents/meta returns personalities + categories (Admission Counsellor present)",
+    "POST /api/agents creates agent; GET /api/agents lists with knowledge_count; GET/PUT/DELETE work; 404 on unknown id",
+    "Role-scoping: counsellor sees only own agents; admin sees all",
+    "POST /api/agents/{id}/knowledge/text stores chunks (>=1) and increments doc count",
+    "POST /api/agents/{id}/knowledge/upload with .txt file extracts+chunks text (chunks>=1)",
+    "GET /api/agents/{id}/knowledge lists docs with chunks/chars/type/title; DELETE removes doc",
+    "RAG chat: POST /api/agents/{id}/chat with fee/demo question returns grounded=true, confidence>0, sources with Fees Info title, reply contains '25000' AND 'demo' AND 'saturday' (verified via real emergentintegrations gpt-4.1-mini call)",
+    "Off-topic chat (FIFA question) triggers fallback wording — agent does NOT invent facts",
+    "POST /api/leads/{id}/calls WITHOUT agent_id → status 'completed (mock)', scripted transcript (backward compat)",
+    "POST /api/leads/{id}/calls WITH agent_id → status 'completed' (real), agent_id/agent_name set, outcome ∈ {interested,not_interested,callback,enrolled}, transcript references knowledge facts (25000/demo/saturday), sources listed, NOT 'completed (mock)'",
+    "Lead interest_score set and stage advanced to 'interested' after agent call",
+    "REGRESSION: 21 P1 tests + 20 integrations-admin tests → 41/41 pass in 8.65s",
+    "FRONTEND nav-ai-studio link → /ai-studio → agent-studio-page loads",
+    "FRONTEND create-agent-btn opens dialog; agent-name-input/category/personality/industry/goal fields work; submit-agent-btn creates and navigates to /ai-studio/:id (agent-detail-page)",
+    "FRONTEND Knowledge tab: manual-title-input + manual-content-input + add-manual-btn adds knowledge; upload-knowledge-btn present; knowledge-list renders",
+    "FRONTEND Playground: playground-input + playground-send-btn → real LLM reply rendered with 'Sources: Fees Info · confidence 100%'; reply contains 'The course fee is INR 25000'",
+    "FRONTEND Settings tab: save-agent-btn saves (all set-name/category/personality/goal/system-prompt/fallback fields present)",
+    "FRONTEND AICallerPanel on lead detail: ai-caller-mode badge shows 'SCRIPTED' initially, call-agent-select dropdown shows 'No agent (scripted) | TEST_UI_Agent | Admission Counsellor'; selecting agent flips badge to 'AI AGENT'. Previous AI-call transcript visible with real fee/demo/duration facts — grounded, not mock."
+  ],
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Create Agent dialog & other Radix dialogs", "issues": ["Console warning: 'Missing Description or aria-describedby={undefined} for DialogContent' — a11y warning only, non-blocking. Add DialogDescription or aria-describedby to silence."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_ai_agents.py",
+    "/app/test_reports/pytest/ai_agents_results.xml",
+    "/app/test_reports/pytest/regression_ai_iter6.xml"
+  ],
+  "action_items": [
+    "OPTIONAL a11y polish: add DialogDescription or aria-describedby to AgentStudio 'Create AI Agent' dialog (and any other radix DialogContent lacking it) — pure warning, no functional impact.",
+    "OPTIONAL UX: leads table rows are not navigable on click from the Leads page (only /leads/:id direct URL works via lead-row link elsewhere). Consider making the whole row clickable or expose data-testid='lead-row-<id>' for easier navigation testing. (Not a regression — pre-existing.)"
+  ],
+  "critical_code_review_comments": [
+    "ai_agents.py generate_call: JSON extraction uses greedy regex r'\\{.*\\}' with DOTALL — if the model ever emits multiple JSON blocks or prose after the JSON, this still works, but a stricter parser (or forcing JSON via response_format if supported) would be more robust.",
+    "ai_agents.py generate_call: if json.loads fails (malformed model output) it will raise and the outer server.py wraps it into scripted fallback via try/except — good. But no logging of the raw output is done inside generate_call itself; consider logging the raw for debugging.",
+    "ai_agents.py chat endpoint uses session_id = f'pg-{agent_id}-{user_id}' by default — this means a single user's playground history accumulates on the LLM side across page reloads; expected behaviour but should be documented for users who want fresh sessions.",
+    "server.py trigger_call: when agent call fails, it silently falls back to scripted mock — a debug hint (e.g., adding a header or setting outcome_reason='fallback') would help distinguish real-completed from fallback-scripted in the DB.",
+    "ai_agents.py retrieve(): loads ALL knowledge docs for an agent into memory (to_list(2000)) then computes TF-IDF in Python for every query — fine for small KBs, but O(N·|q|) per request will not scale beyond a few thousand chunks. Fine for Phase 1."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_ai_agents.py (new — 10 tests, uses real EMERGENT_LLM_KEY)",
+    "/app/test_reports/iteration_6.json (new)"
+  ],
+  "success_rate": {"backend": "100% (10/10 new + 41/41 regression = 51/51)", "frontend": "100% (AI Studio create/knowledge/playground/save, AICallerPanel agent selector + mode badge all verified end-to-end)"},
+  "test_credentials": "admin@leadflow.com/admin123, counsellor1@leadflow.com/test123 (EMERGENT_LLM_KEY present in backend/.env — real LLM calls made)",
+  "seed_data_creation": "Created TEST_Agent_*, TEST_Cnsl_*, TEST_KB_Agent_*, TEST_UI_Agent agents during testing — all deleted via DELETE /api/agents/{id} in fixture teardown and post-run cleanup script. Left the seeded 'Admission Counsellor' agent untouched. TEST_AILead lead deleted.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Phase 1 AI Agent Studio is production-ready for its scope. New suite: /app/backend/tests/test_ai_agents.py (~11s incl. two real gpt-4.1-mini calls). Run all four suites: `pytest backend/tests/test_p1_features.py backend/tests/test_integrations_admin.py backend/tests/test_phase2_meta_templates.py backend/tests/test_ai_agents.py -o addopts=''` → expected 67 tests total (21+20+16+10). Live PSTN telephony is intentionally NOT built (Phase 3). AI call WITHOUT agent_id is the intentional mock-scripted fallback. Note: playground/chat/generate_call all make REAL LLM calls; latency ~2-5s per request.",
+  "rca_of_the_issue": "N/A — the original 'AI calling is not working' MOCK bug is FIXED. When agent_id is passed, the LLM produces a real knowledge-grounded transcript (verified: fees INR 25000, Saturday demo class, 12-week duration all appeared in transcript from uploaded KB); status is 'completed' (not 'completed (mock)'); agent_name/sources set; lead.interest_score updated; lead.stage advanced to interested. Backward compatibility preserved: absence of agent_id keeps the old scripted mock."
+}
