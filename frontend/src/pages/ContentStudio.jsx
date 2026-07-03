@@ -64,7 +64,7 @@ export default function ContentStudio() {
           <CardContent className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               {p.image_b64 ? (
-                <img src={`data:image/png;base64,${p.image_b64}`} alt="banner" className="w-full rounded-md border border-zinc-200" />
+                <img src={`data:${p.image_b64.startsWith("/9j/") ? "image/jpeg" : "image/png"};base64,${p.image_b64}`} alt="banner" className="w-full rounded-md border border-zinc-200" data-testid={`post-image-${p.id}`} />
               ) : (
                 <div className="w-full aspect-[1200/630] flex items-center justify-center bg-zinc-100 rounded-md border border-zinc-200 text-zinc-400">
                   <ImageIcon className="w-8 h-8" />

@@ -1,10 +1,12 @@
 """Configurable social post generator: pulls news from configured sources/keywords, drafts post + banner via AI, queues for approval, publishes to FB/IG. Includes an optional background scheduler."""
-import os, uuid, asyncio, base64, httpx
+import os, uuid, asyncio, base64, httpx, logging
 from datetime import datetime, timezone
 from xml.etree import ElementTree as ET
 from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SOURCES = ["https://news.google.com/rss/search?q={q}&hl=en-IN&gl=IN&ceid=IN:en"]
 DEFAULT_KEYWORDS = ["SSC CGL recruitment", "IBPS PO notification", "UPSC notification", "government jobs India"]
@@ -58,16 +60,18 @@ async def gen_banner_image(banner_text: str, topic: str) -> str | None:
         from emergentintegrations.llm.chat import LlmChat, UserMessage
         key = os.environ["EMERGENT_LLM_KEY"]
         chat = LlmChat(api_key=key, session_id=f"banner-{uuid.uuid4()}",
-                       system_message="You generate eye-catching educational social media banner images.").with_model("gemini", "gemini-3-flash-preview")
+                       system_message="You generate eye-catching educational social media banner images.")
+        chat.with_model("gemini", "gemini-3.1-flash-image-preview").with_params(modalities=["image", "text"])
         prompt = (f"Create a vibrant 1200x630 social media banner. Bold text overlay: '{banner_text}'. "
                   f"Theme: {topic}. Style: clean modern Indian education branding, blue and white palette, "
                   f"professional, eye-catching. No watermarks.")
-        result = await chat.send_message(UserMessage(text=prompt, generate_images=True))
-        for img in getattr(result, "images", []) or []:
-            if hasattr(img, "data"): return img.data
-            if isinstance(img, dict) and img.get("data"): return img["data"]
+        _text, images = await chat.send_message_multimodal_response(UserMessage(text=prompt))
+        if images:
+            img = images[0]
+            return img.get("data") if isinstance(img, dict) else getattr(img, "data", None)
         return None
-    except Exception:
+    except Exception as e:
+        logger.error(f"gen_banner_image failed: {e}")
         return None
 
 
