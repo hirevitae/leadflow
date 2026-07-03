@@ -296,17 +296,22 @@ def build_voice_router(db, get_current_user, add_activity):
         status = form.get("CallStatus", "")
         call = await db.calls.find_one({"id": cid})
         if call and status in ("completed", "busy", "no-answer", "failed", "canceled"):
-            if status == "completed" and not call.get("finalized"):
+            transcript = call.get("transcript", [])
+            map_out = {"busy": "not_interested", "no-answer": "callback",
+                       "failed": "not_interested", "canceled": "callback"}
+            if not call.get("finalized") and transcript:
+                # A conversation happened — generate an LLM summary regardless of final status.
                 agent = await db.ai_agents.find_one({"id": call.get("agent_id")}) if call.get("agent_id") else None
-                summary, outcome, score = await _finalize(cid, agent, call.get("transcript", []))
+                summary, outcome, score = await _finalize(cid, agent, transcript, status=status)
                 if score is not None:
                     await db.leads.update_one({"id": call["lead_id"]}, {"$set": {"interest_score": score}})
-            else:
-                map_out = {"busy": "not_interested", "no-answer": "callback",
-                           "failed": "not_interested", "canceled": "callback"}
+                if status != "completed":
+                    await db.calls.update_one({"id": cid}, {"$set": {"outcome": map_out.get(status, "callback")}})
+            elif not call.get("finalized"):
+                # No conversation (e.g. not answered) — record a status-based summary.
                 await db.calls.update_one({"id": cid}, {"$set": {
                     "status": status, "outcome": map_out.get(status, "callback"),
-                    "summary": f"Call {status.replace('-', ' ')}.", "live": False}})
+                    "summary": f"Call {status.replace('-', ' ')} — no conversation took place."}})
             await db.calls.update_one({"id": cid}, {"$set": {"live": False}})
         return Response(status_code=204)
 

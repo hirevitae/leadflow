@@ -22,7 +22,13 @@ export default function AICallerPanel({ lead, onActivity }) {
     if (data[0]) setLatest(data[0]);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [lead.id]);
-  useEffect(() => { api.get("/agents").then(({ data }) => setAgents(data)).catch(() => {}); }, []);
+  useEffect(() => {
+    api.get("/agents").then(({ data }) => {
+      setAgents(data);
+      const active = data.find((a) => a.status === "active") || data[0];
+      if (active) setAgentId(active.id);
+    }).catch(() => {});
+  }, []);
   useEffect(() => () => clearInterval(pollRef.current), []);
 
   const startCall = async () => {
