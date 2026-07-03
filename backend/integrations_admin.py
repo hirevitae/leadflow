@@ -80,6 +80,7 @@ PROVIDERS = {
             {"key": "api_secret", "label": "API Secret (optional)", "secret": True},
             {"key": "phone_number", "label": "Phone Number (E.164)", "secret": False},
             {"key": "handoff_number", "label": "Human Handoff Number (E.164)", "secret": False},
+            {"key": "default_country_code", "label": "Default Country Code (e.g. +91)", "secret": False, "default": "+91"},
         ],
         "required": ["account_sid", "auth_token", "phone_number"],
     },

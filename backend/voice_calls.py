@@ -8,6 +8,7 @@ import os
 import re
 import uuid
 import base64
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -49,6 +50,24 @@ def _public_base(request: Request) -> str:
 def _matches(text: str, words) -> bool:
     t = (text or "").lower()
     return any(w in t for w in words)
+
+
+def _to_e164(phone: str, default_cc: str) -> str:
+    """Normalize a phone number to E.164. Uses default_cc (e.g. '+91') when no country code."""
+    p = (phone or "").strip()
+    if p.startswith("+"):
+        return "+" + re.sub(r"\D", "", p[1:])
+    digits = re.sub(r"\D", "", p)
+    if digits.startswith("00"):
+        return "+" + digits[2:]
+    cc = re.sub(r"\D", "", default_cc or "")
+    if not cc:
+        return "+" + digits
+    # Avoid double-prefixing if the number already includes the country code.
+    if digits.startswith(cc) and len(digits) > 10:
+        return "+" + digits
+    digits = digits.lstrip("0")  # drop domestic trunk prefix before adding country code
+    return "+" + cc + digits
 
 
 def _transcript_text(transcript) -> str:
@@ -170,21 +189,24 @@ def build_voice_router(db, get_current_user, add_activity):
         await db.calls.insert_one(dict(doc))
         try:
             client, creds = await _twilio_client()
-            call = client.calls.create(
-                to=lead["phone"], from_=creds["phone_number"],
-                url=f"{base}/api/voice/twiml/entry?cid={cid}", method="POST",
-                status_callback=f"{base}/api/voice/status?cid={cid}", status_callback_method="POST",
-                status_callback_event=["initiated", "ringing", "answered", "completed"],
-                record=True,
-                recording_status_callback=f"{base}/api/voice/recording?cid={cid}",
-                recording_status_callback_method="POST",
-                recording_status_callback_event=["completed"],
-            )
+            to_number = _to_e164(lead["phone"], creds.get("default_country_code") or "+91")
+            call = await asyncio.to_thread(
+                lambda: client.calls.create(
+                    to=to_number, from_=creds["phone_number"],
+                    url=f"{base}/api/voice/twiml/entry?cid={cid}", method="POST",
+                    status_callback=f"{base}/api/voice/status?cid={cid}", status_callback_method="POST",
+                    status_callback_event=["initiated", "ringing", "answered", "completed"],
+                    record=True,
+                    recording_status_callback=f"{base}/api/voice/recording?cid={cid}",
+                    recording_status_callback_method="POST",
+                    recording_status_callback_event=["completed"],
+                ))
         except Exception as e:
-            await db.calls.update_one({"id": cid}, {"$set": {"status": "failed", "summary": str(e)[:300]}})
+            msg = str(e)
+            await db.calls.update_one({"id": cid}, {"$set": {"status": "failed", "summary": msg[:300], "live": False}})
             logger.error(f"Twilio call create failed: {e}")
-            raise HTTPException(502, f"Could not place call: {str(e)[:200]}")
-        await db.calls.update_one({"id": cid}, {"$set": {"call_sid": call.sid, "status": "ringing"}})
+            raise HTTPException(400, f"Could not place call: {msg[:250]}")
+        await db.calls.update_one({"id": cid}, {"$set": {"call_sid": call.sid, "status": "ringing", "to_number": to_number}})
         await add_activity(lead_id, "ai_call", f"Live AI call started ({payload.language})", user)
         doc.update({"call_sid": call.sid, "status": "ringing"})
         return doc
