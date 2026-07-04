@@ -11,6 +11,7 @@ import { Pause, Play, XCircle } from "lucide-react";
 
 const STATUS_TINT = {
   sending: "bg-blue-100 text-blue-700", scheduled: "bg-amber-100 text-amber-700",
+  testing: "bg-violet-100 text-violet-700",
   paused: "bg-zinc-200 text-zinc-700", completed: "bg-emerald-100 text-emerald-700",
   canceled: "bg-rose-100 text-rose-700", draft: "bg-zinc-100 text-zinc-600",
 };
@@ -68,6 +69,27 @@ export const EmailCampaignDetail = ({ campaignId, open, onOpenChange, onChanged 
           <div className="flex justify-between text-xs text-zinc-500 mb-1"><span>Progress</span><span data-testid="progress-label">{done}/{s.total} ({pct}%)</span></div>
           <Progress value={pct} data-testid="campaign-progress" />
         </div>
+
+        {c.recurrence?.enabled && <div className="text-xs text-zinc-500 mb-3" data-testid="recurrence-badge">🔁 Recurring · {c.recurrence.frequency}{c.is_recurrence_child_of ? " (auto-generated run)" : ""}</div>}
+
+        {c.ab?.enabled && (
+          <div className="mb-4 border border-violet-100 bg-violet-50/40 rounded-md p-3" data-testid="ab-results">
+            <div className="text-sm font-semibold text-violet-800 mb-2">A/B test {c.ab.winner_variant_id ? `· Winner: ${c.ab.winner_name}` : "· in progress"}</div>
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+              {(c.ab.variants || []).map((v) => {
+                const vs = v.stats || {}; const sent = Math.max(vs.sent || 0, 1);
+                const isWin = v.id === c.ab.winner_variant_id;
+                return (
+                  <div key={v.id} className={`rounded-md border p-2 ${isWin ? "border-emerald-400 bg-emerald-50" : "border-zinc-200 bg-white"}`} data-testid={`variant-result-${v.name}`}>
+                    <div className="text-xs font-semibold flex items-center gap-1">{v.name} {isWin && <span className="text-emerald-600">★</span>}</div>
+                    <div className="text-[11px] text-zinc-500 truncate">{v.subject}</div>
+                    <div className="text-[11px] text-zinc-600 mt-1">{vs.sent || 0} sent · {Math.round((vs.clicked || 0) / sent * 100)}% CTR · {Math.round((vs.opened || 0) / sent * 100)}% open</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-4">
           {[["Sent", s.sent], ["Delivered", s.delivered], ["Opened", s.opened], ["Clicked", s.clicked], ["Bounced", s.bounced], ["Failed", s.failed]].map(([k, v]) => (

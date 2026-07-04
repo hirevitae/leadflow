@@ -65,6 +65,29 @@ class Throttle(BaseModel):
     business_hours_only: bool = False
 
 
+class Variant(BaseModel):
+    id: Optional[str] = None
+    name: str = "Variant"
+    template_id: Optional[str] = None
+    subject: str
+    html: str
+
+
+class ABConfig(BaseModel):
+    enabled: bool = False
+    variants: List[Variant] = []
+    test_percent: int = 30
+    winner_metric: str = "click_rate"   # click_rate | open_rate
+    winner_after_minutes: int = 60
+
+
+class Recurrence(BaseModel):
+    enabled: bool = False
+    frequency: str = "weekly"           # daily | weekly | monthly | custom
+    custom_dates: List[str] = []
+    until: Optional[str] = None
+
+
 class CampaignIn(BaseModel):
     name: str
     template_id: Optional[str] = None
@@ -73,6 +96,8 @@ class CampaignIn(BaseModel):
     stages: List[str] = []
     schedule: Schedule = Schedule()
     throttle: Throttle = Throttle()
+    ab: ABConfig = ABConfig()
+    recurrence: Recurrence = Recurrence()
 
 
 class TestSendIn(BaseModel):
@@ -107,6 +132,39 @@ def _render(html: str, lead: dict, base: str, campaign_id: str) -> str:
 def _empty_stats():
     return {k: 0 for k in ["total", "queued", "sent", "delivered", "opened",
                            "clicked", "bounced", "complained", "unsubscribed", "failed"]}
+
+
+def _add_month(dt: datetime) -> datetime:
+    m = dt.month + 1
+    y = dt.year + (1 if m > 12 else 0)
+    m = 1 if m > 12 else m
+    day = min(dt.day, [31, 29 if y % 4 == 0 and (y % 100 != 0 or y % 400 == 0) else 28,
+                       31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1])
+    return dt.replace(year=y, month=m, day=day)
+
+
+def _next_run(base: datetime, rec: dict):
+    freq = rec.get("frequency", "weekly")
+    if freq == "custom":
+        future = sorted([d for d in (rec.get("custom_dates") or [])])
+        for d in future:
+            try:
+                dt = datetime.fromisoformat(d.replace("Z", "+00:00"))
+                if dt > base:
+                    return dt.astimezone(timezone.utc)
+            except Exception:
+                continue
+        return None
+    delta = {"daily": timedelta(days=1), "weekly": timedelta(days=7)}.get(freq)
+    nxt = _add_month(base) if freq == "monthly" else base + (delta or timedelta(days=7))
+    until = rec.get("until")
+    if until:
+        try:
+            if nxt > datetime.fromisoformat(until.replace("Z", "+00:00")).astimezone(timezone.utc):
+                return None
+        except Exception:
+            pass
+    return nxt
 
 
 def build_email_router(db, get_current_user, add_activity, get_creds):
@@ -153,11 +211,45 @@ def build_email_router(db, get_current_user, add_activity, get_creds):
 
     @router.put("/templates/{tid}")
     async def update_template(tid: str, payload: TemplateUpdate, user=Depends(get_current_user)):
+        current = await db.email_templates.find_one({"id": tid})
+        if not current:
+            raise HTTPException(404, "Template not found")
         update = {k: v for k, v in payload.model_dump().items() if v is not None}
+        # Snapshot the current content as a version before overwriting (only on content changes).
+        if any(k in update for k in ("subject", "html", "name", "category")):
+            vcount = await db.email_template_versions.count_documents({"template_id": tid})
+            await db.email_template_versions.insert_one({
+                "id": str(uuid.uuid4()), "template_id": tid, "version_no": vcount + 1,
+                "name": current.get("name"), "category": current.get("category"),
+                "subject": current.get("subject"), "html": current.get("html"),
+                "created_by": user["name"], "created_at": _now().isoformat()})
         update["updated_at"] = _now().isoformat()
         d = await db.email_templates.find_one_and_update({"id": tid}, {"$set": update}, return_document=True)
-        if not d:
-            raise HTTPException(404, "Template not found")
+        d.pop("_id", None)
+        return d
+
+    @router.get("/templates/{tid}/versions")
+    async def list_versions(tid: str, user=Depends(get_current_user)):
+        docs = await db.email_template_versions.find({"template_id": tid}).sort("version_no", -1).to_list(200)
+        for d in docs:
+            d.pop("_id", None)
+        return docs
+
+    @router.post("/templates/{tid}/versions/{vid}/restore")
+    async def restore_version(tid: str, vid: str, user=Depends(get_current_user)):
+        v = await db.email_template_versions.find_one({"id": vid, "template_id": tid})
+        if not v:
+            raise HTTPException(404, "Version not found")
+        current = await db.email_templates.find_one({"id": tid})
+        vcount = await db.email_template_versions.count_documents({"template_id": tid})
+        await db.email_template_versions.insert_one({
+            "id": str(uuid.uuid4()), "template_id": tid, "version_no": vcount + 1,
+            "name": current.get("name"), "category": current.get("category"),
+            "subject": current.get("subject"), "html": current.get("html"),
+            "created_by": f"{user['name']} (pre-restore)", "created_at": _now().isoformat()})
+        d = await db.email_templates.find_one_and_update({"id": tid},
+            {"$set": {"subject": v["subject"], "html": v["html"], "name": v["name"],
+                      "category": v["category"], "updated_at": _now().isoformat()}}, return_document=True)
         d.pop("_id", None)
         return d
 
@@ -229,25 +321,57 @@ def build_email_router(db, get_current_user, add_activity, get_creds):
             send_at = datetime.fromisoformat(payload.schedule.send_at.replace("Z", "+00:00")) if is_later else now
         except Exception:
             send_at = now
+        send_iso = send_at.astimezone(timezone.utc).isoformat()
+        import random
+        random.shuffle(recipients)
+
+        ab = payload.ab.model_dump()
+        ab_on = ab.get("enabled") and len(ab.get("variants", [])) >= 2
         stats = _empty_stats()
         stats["total"] = stats["queued"] = len(recipients)
+
         campaign = {
             "id": cid, "name": payload.name, "template_id": payload.template_id,
             "subject": payload.subject, "html": payload.html, "stages": payload.stages,
             "schedule": payload.schedule.model_dump(), "throttle": payload.throttle.model_dump(),
+            "recurrence": payload.recurrence.model_dump(),
             "status": "scheduled" if is_later else "sending", "stats": stats,
             "created_by": user["name"], "created_at": now.isoformat(),
-            "send_at": send_at.astimezone(timezone.utc).isoformat(),
-            "started_at": None, "completed_at": None,
+            "send_at": send_iso, "started_at": None, "completed_at": None,
+            "ab": {"enabled": False},
         }
+        queue_docs = []
+        if ab_on:
+            variants = ab["variants"]
+            for v in variants:
+                v["id"] = v.get("id") or str(uuid.uuid4())
+                v["stats"] = {"sent": 0, "opened": 0, "clicked": 0}
+            test_count = max(len(variants), (len(recipients) * ab["test_percent"]) // 100)
+            test_count = min(test_count, len(recipients))
+            test, holdback = recipients[:test_count], recipients[test_count:]
+            winner_at = (now + timedelta(minutes=ab["winner_after_minutes"])).isoformat()
+            campaign["ab"] = {"enabled": True, "variants": variants, "test_percent": ab["test_percent"],
+                              "winner_metric": ab["winner_metric"], "winner_at": winner_at,
+                              "winner_variant_id": None, "holdback": len(holdback)}
+            campaign["status"] = "scheduled" if is_later else "testing"
+            for i, l in enumerate(test):
+                v = variants[i % len(variants)]
+                queue_docs.append({"id": str(uuid.uuid4()), "campaign_id": cid, "lead_id": l["id"],
+                    "to": l["email"], "status": "pending", "attempts": 0, "scheduled_for": send_iso,
+                    "variant_id": v["id"], "subject": v["subject"], "html": v["html"],
+                    "provider_id": None, "error": None, "created_at": now.isoformat(), "sent_at": None})
+            for l in holdback:
+                queue_docs.append({"id": str(uuid.uuid4()), "campaign_id": cid, "lead_id": l["id"],
+                    "to": l["email"], "status": "holdback", "attempts": 0, "scheduled_for": send_iso,
+                    "variant_id": None, "subject": None, "html": None,
+                    "provider_id": None, "error": None, "created_at": now.isoformat(), "sent_at": None})
+        else:
+            queue_docs = [{"id": str(uuid.uuid4()), "campaign_id": cid, "lead_id": l["id"],
+                "to": l["email"], "status": "pending", "attempts": 0, "scheduled_for": send_iso,
+                "variant_id": None, "subject": None, "html": None,
+                "provider_id": None, "error": None, "created_at": now.isoformat(), "sent_at": None} for l in recipients]
+
         await db.email_campaigns.insert_one(dict(campaign))
-        queue_docs = [{
-            "id": str(uuid.uuid4()), "campaign_id": cid, "lead_id": l["id"],
-            "to": l["email"], "status": "pending", "attempts": 0,
-            "scheduled_for": send_at.astimezone(timezone.utc).isoformat(),
-            "provider_id": None, "error": None,
-            "created_at": now.isoformat(), "sent_at": None,
-        } for l in recipients]
         if queue_docs:
             await db.email_queue.insert_many(queue_docs)
         campaign.pop("_id", None)
@@ -357,18 +481,27 @@ def build_email_router(db, get_current_user, add_activity, get_creds):
         stat_key = {"delivered": "delivered", "opened": "opened", "clicked": "clicked",
                     "bounced": "bounced", "complained": "complained"}.get(etype)
         if stat_key:
-            await db.email_campaigns.update_one({"id": cid}, {"$inc": {f"stats.{stat_key}": 1}})
+            inc = {f"stats.{stat_key}": 1}
+            filt = None
+            if item.get("variant_id") and stat_key in ("opened", "clicked"):
+                inc[f"ab.variants.$[v].stats.{stat_key}"] = 1
+                filt = [{"v.id": item["variant_id"]}]
+            await db.email_campaigns.update_one({"id": cid}, {"$inc": inc}, array_filters=filt)
             url = (data.get("click") or {}).get("link") if etype == "clicked" else None
-            await _record_event(cid, lid, email, stat_key, url)
+            await _record_event(cid, lid, email, stat_key, url, data)
             if etype in ("bounced", "complained"):
                 await db.email_suppression.update_one({"email": email},
                     {"$set": {"email": email, "reason": etype, "created_at": _now().isoformat()}}, upsert=True)
         return {"ok": True}
 
-    async def _record_event(cid, lid, email, etype, url=None):
+    async def _record_event(cid, lid, email, etype, url=None, data=None):
+        d = data or {}
+        ua = d.get("user_agent") or (d.get("open") or {}).get("userAgent") or (d.get("click") or {}).get("userAgent") or ""
+        ip = d.get("ip_address") or (d.get("open") or {}).get("ipAddress") or (d.get("click") or {}).get("ipAddress") or ""
         await db.email_events.insert_one({
             "id": str(uuid.uuid4()), "campaign_id": cid, "lead_id": lid, "email": email,
-            "type": etype, "url": url, "created_at": _now().isoformat()})
+            "type": etype, "url": url, "user_agent": ua, "ip": ip,
+            "device": _device_from_ua(ua), "created_at": _now().isoformat()})
         labels = {"delivered": "Email delivered", "opened": "Email opened", "clicked": "Email link clicked",
                   "bounced": "Email bounced", "complained": "Marked as spam", "unsubscribed": "Unsubscribed"}
         try:
@@ -395,8 +528,8 @@ def build_email_router(db, get_current_user, add_activity, get_creds):
             await db.email_queue.update_one({"id": item["id"]}, {"$set": {"status": "skipped", "error": "suppressed"}})
             await db.email_campaigns.update_one({"id": campaign["id"]}, {"$inc": {"stats.queued": -1}})
             return
-        subject = _render(campaign["subject"], lead, base, campaign["id"])
-        html = _render(campaign["html"], lead, base, campaign["id"])
+        subject = _render(item.get("subject") or campaign["subject"], lead, base, campaign["id"])
+        html = _render(item.get("html") or campaign["html"], lead, base, campaign["id"])
         try:
             res = await asyncio.to_thread(resend.Emails.send,
                 {"from": sender, "to": [item["to"]], "subject": subject, "html": html,
@@ -404,8 +537,13 @@ def build_email_router(db, get_current_user, add_activity, get_creds):
             pid = (res or {}).get("id")
             await db.email_queue.update_one({"id": item["id"]},
                 {"$set": {"status": "sent", "provider_id": pid, "sent_at": _now().isoformat()}})
-            await db.email_campaigns.update_one({"id": campaign["id"]},
-                {"$inc": {"stats.sent": 1, "stats.queued": -1}})
+            inc = {"stats.sent": 1, "stats.queued": -1}
+            filt = None
+            if item.get("variant_id"):
+                inc["ab.variants.$[v].stats.sent"] = 1
+                filt = [{"v.id": item["variant_id"]}]
+            await db.email_campaigns.update_one({"id": campaign["id"]}, {"$inc": inc},
+                                                array_filters=filt)
             await add_activity(lead["id"], "email_sent", f"Campaign: {campaign['name'][:50]}", SYS)
         except Exception as e:
             attempts = item.get("attempts", 0) + 1
@@ -419,16 +557,97 @@ def build_email_router(db, get_current_user, add_activity, get_creds):
                     {"$set": {"attempts": attempts, "error": str(e)[:250]}})
             logger.error(f"Email send failed (attempt {attempts}): {e}")
 
+    async def _spawn_recurrence(campaign, now_iso):
+        rec = campaign.get("recurrence", {})
+        if not rec.get("enabled"):
+            return
+        try:
+            base_dt = datetime.fromisoformat(campaign["send_at"].replace("Z", "+00:00"))
+        except Exception:
+            base_dt = _now()
+        nxt = _next_run(base_dt, rec)
+        if not nxt:
+            return
+        # Resolve a fresh audience at spawn time
+        leads = await db.leads.find({"stage": {"$in": campaign["stages"]}}).to_list(10000)
+        suppressed = {s["email"].lower() for s in await db.email_suppression.find({}).to_list(10000)}
+        seen, recipients = set(), []
+        for l in leads:
+            e = (l.get("email") or "").lower()
+            if not e or e in suppressed or e in seen:
+                continue
+            seen.add(e); recipients.append(l)
+        if not recipients:
+            return
+        # Use the winning variant content if the parent ran A/B, else base content.
+        ab = campaign.get("ab", {})
+        subject, html = campaign["subject"], campaign["html"]
+        if ab.get("enabled") and ab.get("winner_variant_id"):
+            win = next((v for v in ab.get("variants", []) if v["id"] == ab["winner_variant_id"]), None)
+            if win:
+                subject, html = win["subject"], win["html"]
+        cid = str(uuid.uuid4())
+        nxt_iso = nxt.astimezone(timezone.utc).isoformat()
+        stats = _empty_stats(); stats["total"] = stats["queued"] = len(recipients)
+        child = {"id": cid, "name": campaign["name"], "template_id": campaign.get("template_id"),
+                 "subject": subject, "html": html, "stages": campaign["stages"],
+                 "schedule": {**campaign.get("schedule", {}), "mode": "later", "send_at": nxt_iso},
+                 "throttle": campaign.get("throttle", {}), "recurrence": rec,
+                 "status": "scheduled", "stats": stats, "created_by": campaign["created_by"],
+                 "created_at": now_iso, "send_at": nxt_iso, "started_at": None, "completed_at": None,
+                 "ab": {"enabled": False}, "is_recurrence_child_of": campaign["id"]}
+        await db.email_campaigns.insert_one(dict(child))
+        await db.email_queue.insert_many([{
+            "id": str(uuid.uuid4()), "campaign_id": cid, "lead_id": l["id"], "to": l["email"],
+            "status": "pending", "attempts": 0, "scheduled_for": nxt_iso, "variant_id": None,
+            "subject": None, "html": None, "provider_id": None, "error": None,
+            "created_at": now_iso, "sent_at": None} for l in recipients])
+        logger.info(f"Recurrence: spawned next run of '{campaign['name']}' at {nxt_iso}")
+
+    async def _handle_idle(campaign, now_iso):
+        cid = campaign["id"]
+        if await db.email_queue.count_documents({"campaign_id": cid, "status": "pending"}) > 0:
+            return
+        ab = campaign.get("ab", {})
+        if campaign["status"] == "testing" and ab.get("enabled"):
+            if now_iso < ab.get("winner_at", ""):
+                return  # still inside the A/B test window
+            variants = ab.get("variants", [])
+
+            def _score(v):
+                st = v.get("stats", {}); sent = max(st.get("sent", 0), 1)
+                if ab.get("winner_metric") == "open_rate":
+                    return st.get("opened", 0) / sent
+                return st.get("clicked", 0) / sent
+            winner = max(variants, key=_score) if variants else None
+            holdback = await db.email_queue.count_documents({"campaign_id": cid, "status": "holdback"})
+            if winner and holdback:
+                await db.email_queue.update_many({"campaign_id": cid, "status": "holdback"},
+                    {"$set": {"status": "pending", "variant_id": winner["id"],
+                              "subject": winner["subject"], "html": winner["html"]}})
+                await db.email_campaigns.update_one({"id": cid},
+                    {"$set": {"status": "sending", "ab.winner_variant_id": winner["id"],
+                              "ab.winner_name": winner.get("name")}})
+            else:
+                await db.email_campaigns.update_one({"id": cid},
+                    {"$set": {"status": "completed", "completed_at": now_iso,
+                              "ab.winner_variant_id": (winner or {}).get("id"),
+                              "ab.winner_name": (winner or {}).get("name")}})
+                await _spawn_recurrence(campaign, now_iso)
+            return
+        await db.email_campaigns.update_one({"id": cid},
+            {"$set": {"status": "completed", "completed_at": now_iso}})
+        await _spawn_recurrence(campaign, now_iso)
+
     async def worker_loop():
         base = os.environ.get("PUBLIC_BASE_URL", "")
         while True:
             try:
                 await asyncio.sleep(TICK_SECONDS)
                 now_iso = _now().isoformat()
-                # Flip due scheduled campaigns to sending
                 await db.email_campaigns.update_many(
                     {"status": "scheduled", "send_at": {"$lte": now_iso}}, {"$set": {"status": "sending"}})
-                active = await db.email_campaigns.find({"status": "sending"}).to_list(100)
+                active = await db.email_campaigns.find({"status": {"$in": ["sending", "testing"]}}).to_list(100)
                 if not active:
                     continue
                 creds = await get_creds(db, "email")
@@ -447,18 +666,13 @@ def build_email_router(db, get_current_user, add_activity, get_creds):
                         {"campaign_id": campaign["id"], "status": "pending",
                          "scheduled_for": {"$lte": now_iso}}).limit(per_tick).to_list(per_tick)
                     if not pending:
-                        remaining = await db.email_queue.count_documents(
-                            {"campaign_id": campaign["id"], "status": "pending"})
-                        if remaining == 0:
-                            await db.email_campaigns.update_one({"id": campaign["id"]},
-                                {"$set": {"status": "completed", "completed_at": now_iso}})
+                        await _handle_idle(campaign, now_iso)
                         continue
                     if not campaign.get("started_at"):
                         await db.email_campaigns.update_one({"id": campaign["id"]}, {"$set": {"started_at": now_iso}})
                     for item in pending:
-                        # Skip if campaign was paused mid-tick
                         fresh = await db.email_campaigns.find_one({"id": campaign["id"]}, {"status": 1})
-                        if not fresh or fresh.get("status") != "sending":
+                        if not fresh or fresh.get("status") not in ("sending", "testing"):
                             break
                         await _send_one(item, campaign, creds, sender, base)
             except Exception as e:
@@ -472,6 +686,17 @@ def _public_base(request: Request) -> str:
     proto = request.headers.get("x-forwarded-proto") or request.url.scheme
     host = request.headers.get("x-forwarded-host") or request.headers.get("host")
     return f"{proto}://{host}"
+
+
+def _device_from_ua(ua: str) -> str:
+    u = (ua or "").lower()
+    if any(x in u for x in ["iphone", "android", "mobile", "ipod"]):
+        return "Mobile"
+    if any(x in u for x in ["ipad", "tablet"]):
+        return "Tablet"
+    if u:
+        return "Desktop"
+    return "Unknown"
 
 
 async def _stored_base(db) -> str:

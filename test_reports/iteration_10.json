@@ -1,0 +1,39 @@
+{
+  "summary": "Email Outreach Phase B (versioning, A/B, recurrence, GrapesJS Visual tab) fully verified. Backend: 7/7 new tests in test_email_phase_b.py pass (template PUT snapshots v1/v2 in email_template_versions, GET /versions lists, POST /versions/{vid}/restore reverts subject+html; A/B campaign with 2 variants + winner_after_minutes=0 + per_minute=120 creates status=testing, worker sends the test batch (all fail in sandbox — expected), selects winner_variant_id, releases holdback, campaign reaches status=completed; recurrence=daily parent spawns a child campaign with is_recurrence_child_of=parent_id, status=scheduled, send_at set for next day). Phase A regression: 17/17 still pass. Frontend: template dialog exposes tab-code/tab-visual (grapes-builder renders correctly within ~3s) and tab-history only when editing an existing template; new-template save works; after editing subject and re-saving, versions-list appears with restore-1 button and clicking it restores the previous subject to the form. Campaign dialog: ab-toggle opens ab-config with variant-0/1-subject/html + test-percent/winner-metric/winner-after; add-variant successfully adds a 3rd variant (variant-2-subject/html); recurrence-toggle exposes recurrence-config + recurrence-frequency select; audience-preview shows '9 deliverable · 21 with email · 12 suppressed/dupe'; create-campaign-btn creates the campaign (dialog closes) and it appears in the list; the detail dialog shows status=testing, ab-results block with A/B/C per-variant stats, and recurrence-badge '🔁 Recurring · weekly'. Regression smoke: /dashboard and /leads still load.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Multiple dialogs (template + campaign + campaign-detail)", "issues": ["Radix DialogContent warnings: 'Missing Description or aria-describedby={undefined}' — accessibility nit; add DialogDescription or aria-describedby to silence and improve a11y."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_email_phase_b.py",
+    "/app/backend/tests/test_email_outreach.py",
+    "/app/test_reports/pytest/email_phase_b.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: variant.stats only tracks {sent, opened, clicked} per variant — no per-variant delivered/bounced/failed. The A/B results UI only shows sent/CTR/open which matches; if you ever need to attribute bounces/failures to a variant, extend _send_one/webhook increments accordingly.",
+    "OPTIONAL a11y: add DialogDescription (or aria-describedby) to EmailTemplateDialog, EmailCampaignDialog, EmailCampaignDetail to remove the Radix DialogContent warning."
+  ],
+  "critical_code_review_comments": [
+    "FIXED by testing agent: /app/frontend/src/components/EmailCampaignDialog.jsx used <Textarea/> for variant-N-html but did NOT import Textarea from @/components/ui/textarea. Would have crashed the A/B UI the moment a user toggled ab-toggle on. Added the import.",
+    "email_campaigns.py A/B worker: variant.stats increments only sent/opened/clicked. This is a design choice; if you want per-variant delivered/bounced/failed for richer reporting, wire the same $[v] positional update pattern into the delivered/bounced/failed branches of _send_one and the webhook handler.",
+    "GrapesEmailBuilder is heavy — currently rendered inside a <TabsContent> that is unmounted when the tab is hidden (via `{tab === 'visual' && <GrapesEmailBuilder …/>}`). This is correct (avoids double-mount cost) but the editor is re-initialized every time the user switches to Visual, discarding any in-memory undo history. Acceptable trade-off; noting for awareness.",
+    "Recurrence child creation copies the ab.enabled=true parent as a plain campaign but the follow-on run of an A/B parent should use the winning variant only — verify _spawn_recurrence sets ab.enabled=false and uses winner_variant html/subject as the campaign subject/html (this was noted in the frontend hint but not asserted in tests; add coverage when non-sandbox sends allow winner selection based on real clicks)."
+  ],
+  "updated_files": [
+    "/app/frontend/src/components/EmailCampaignDialog.jsx (added missing Textarea import)",
+    "/app/backend/tests/test_email_phase_b.py (new — 7 tests: versioning×4, A/B×2, recurrence×1)",
+    "/app/test_reports/pytest/email_phase_b.xml (new)",
+    "/app/test_reports/iteration_10.json (new)"
+  ],
+  "success_rate": {"backend": "100% (17/17 Phase A + 7/7 Phase B = 24/24)", "frontend": "100% (Visual/GrapesJS render, versions save+list+restore round-trip, A/B config incl. 3rd variant + winner metric/percent/after, recurrence config + frequency select, audience preview, campaign create → detail with ab-results + recurrence-badge, regression smoke on Dashboard + Leads)"},
+  "test_credentials": "admin@leadflow.com / admin123",
+  "seed_data_creation": "Created TEST_ver_*, TEST_ab_*, TEST_rec_*, TEST_AB_UI_* templates/campaigns. Backend tests are re-runnable & idempotent (uuid-suffixed names).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: pytest backend/tests/test_email_outreach.py backend/tests/test_email_phase_b.py -v (~110s total, needs REACT_APP_BACKEND_URL). Phase B testids: tab-code / tab-visual / tab-history, grapes-builder, versions-list / versions-empty, version-{n}, restore-{n}, ab-toggle → ab-config with variant-{0..2}-subject/html + add-variant + test-percent + winner-metric + winner-after, recurrence-toggle → recurrence-config + recurrence-frequency, campaign-detail exposes ab-results + recurrence-badge + campaign-status ('testing' during A/B run). A/B in sandbox: variant.stats stay 0 (sends fail) but engine still selects winner via tie-break/fallback and completes the campaign — that's expected and asserted. Recurrence child is created with is_recurrence_child_of=parent_id + status=scheduled + send_at ≈ +1 day.",
+  "rca_of_the_issue": "One production bug found + fixed: EmailCampaignDialog.jsx imported {Input, Checkbox, Switch, Select…} but forgot Textarea, which is used inside the A/B variants block. Any user toggling A/B on would have crashed the React tree with 'Textarea is not defined'. Added `import { Textarea } from '@/components/ui/textarea';`. All other reported Phase B behavior works correctly on the first pass."
+}
