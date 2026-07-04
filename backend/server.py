@@ -185,6 +185,19 @@ class BulkCallsIn(BaseModel):
     language: str = "english"
 
 
+class BulkEmailIn(BaseModel):
+    stage: Optional[str] = None
+    stages: Optional[List[str]] = None
+    subject: str
+    body: str
+
+
+class BulkSmsIn(BaseModel):
+    stage: Optional[str] = None
+    stages: Optional[List[str]] = None
+    message: str
+
+
 class TaskIn(BaseModel):
     title: str
     due_date: str  # ISO string
@@ -880,6 +893,83 @@ async def bulk_calls(payload: BulkCallsIn, user=Depends(get_current_user)):
     return {"ok": True, "called": called, "stages": stages}
 
 
+@api_router.post("/bulk/email")
+async def bulk_email(payload: BulkEmailIn, user=Depends(get_current_user)):
+    stages = _resolve_stages(payload.stages, payload.stage)
+    em = await get_creds(db, "email")
+    api_key = em.get("api_key")
+    if not api_key:
+        raise HTTPException(400, "Email not configured. Set it in Settings → Integrations")
+    sender = em.get("sender_email") or "onboarding@resend.dev"
+    resend.api_key = api_key
+    leads = await db.leads.find({"stage": {"$in": stages}}).to_list(5000)
+    now = datetime.now(timezone.utc).isoformat()
+    sent, failed, skipped, last_error = 0, 0, 0, None
+    for lead in leads:
+        if not lead.get("email"):
+            skipped += 1
+            continue
+        subject = payload.subject.replace("{name}", lead.get("name") or "").replace("{course}", lead.get("course") or "")
+        html = payload.body.replace("{name}", lead.get("name") or "").replace("{course}", lead.get("course") or "").replace("\n", "<br>")
+        status, provider_id = "sent", None
+        try:
+            result = await asyncio.to_thread(resend.Emails.send,
+                {"from": sender, "to": [lead["email"]], "subject": subject, "html": html})
+            provider_id = (result or {}).get("id")
+        except Exception as e:
+            status = "failed"; failed += 1; last_error = str(e)
+            logger.error(f"Bulk email failed for {lead['id']}: {e}")
+        await db.emails.insert_one({
+            "id": str(uuid.uuid4()), "lead_id": lead["id"], "to": lead["email"],
+            "subject": subject, "body": payload.body, "provider_id": provider_id,
+            "status": status, "created_at": now})
+        if status == "sent":
+            await _add_activity(lead["id"], "email_sent", f"Bulk email: {subject[:60]}", user)
+            sent += 1
+    return {"ok": True, "sent": sent, "failed": failed, "skipped": skipped,
+            "stages": stages, "error": last_error}
+
+
+@api_router.post("/bulk/sms")
+async def bulk_sms(payload: BulkSmsIn, user=Depends(get_current_user)):
+    stages = _resolve_stages(payload.stages, payload.stage)
+    if not await is_configured(db, "twilio"):
+        raise HTTPException(400, "Twilio (SMS) not configured. Add credentials in Settings → Integrations")
+    from twilio.rest import Client
+    from voice_calls import _to_e164
+    creds = await get_creds(db, "twilio")
+    client = Client(creds["account_sid"], creds["auth_token"])
+    from_number = creds["phone_number"]
+    default_cc = creds.get("default_country_code") or "+91"
+    leads = await db.leads.find({"stage": {"$in": stages}}).to_list(5000)
+    now = datetime.now(timezone.utc).isoformat()
+    sent, failed, skipped, last_error = 0, 0, 0, None
+    for lead in leads:
+        if not lead.get("phone"):
+            skipped += 1
+            continue
+        body = payload.message.replace("{name}", lead.get("name") or "").replace("{course}", lead.get("course") or "your course")
+        to_number = _to_e164(lead["phone"], default_cc)
+        status, provider_id = "sent", None
+        try:
+            msg = await asyncio.to_thread(lambda: client.messages.create(to=to_number, from_=from_number, body=body))
+            provider_id = msg.sid
+        except Exception as e:
+            status = "failed"; failed += 1; last_error = str(e)[:250]
+            logger.error(f"Bulk SMS failed for {lead['id']}: {e}")
+        await db.messages.insert_one({
+            "id": str(uuid.uuid4()), "lead_id": lead["id"], "direction": "outbound",
+            "channel": "sms", "body": body, "status": status, "provider_id": provider_id,
+            "created_at": now})
+        if status == "sent":
+            await _add_activity(lead["id"], "sms_sent", f"Bulk SMS: {body[:60]}", user)
+            if lead.get("stage") == "new":
+                await db.leads.update_one({"id": lead["id"]}, {"$set": {"stage": "contacted"}})
+            sent += 1
+    return {"ok": True, "sent": sent, "failed": failed, "skipped": skipped,
+            "stages": stages, "error": last_error}
+
+
 # ---------------- Tasks (Follow-ups) ----------------
 @api_router.get("/tasks")
 async def list_tasks(user=Depends(get_current_user)):
@@ -1007,7 +1097,7 @@ async def send_lead_email(lead_id: str, payload: EmailIn, user=Depends(get_curre
         result = await asyncio.to_thread(resend.Emails.send, params)
     except Exception as e:
         logger.error(f"Resend send failed: {e}")
-        raise HTTPException(502, f"Email send failed: {e}")
+        raise HTTPException(400, f"Email send failed: {e}")
     now = datetime.now(timezone.utc).isoformat()
     rec = {
         "id": str(uuid.uuid4()), "lead_id": lead_id, "to": lead["email"],

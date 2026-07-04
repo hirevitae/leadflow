@@ -4,9 +4,11 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { api, formatApiError, STAGES } from "@/lib/api";
 import { toast } from "sonner";
-import { Megaphone, MessageCircle, PhoneCall } from "lucide-react";
+import { Megaphone, MessageCircle, PhoneCall, Mail, MessageSquare } from "lucide-react";
 
 export default function BulkOutreachDialog({ onDone }) {
   const [open, setOpen] = useState(false);
@@ -22,6 +24,9 @@ export default function BulkOutreachDialog({ onDone }) {
   const [metaErr, setMetaErr] = useState("");
   const [metaName, setMetaName] = useState("");
   const [metaParams, setMetaParams] = useState([]);
+  const [emailSubject, setEmailSubject] = useState("");
+  const [emailBody, setEmailBody] = useState("");
+  const [smsMessage, setSmsMessage] = useState("");
 
   const loadMetaTemplates = async () => {
     setMetaErr("");
@@ -77,9 +82,19 @@ export default function BulkOutreachDialog({ onDone }) {
           const res = await api.post("/bulk/whatsapp", { stages, template_id: templateId });
           toast.success(`Sent WhatsApp to ${res.data.sent} lead${res.data.sent === 1 ? "" : "s"}`);
         }
-      } else {
+      } else if (mode === "call") {
         const res = await api.post("/bulk/calls", { stages, language });
         toast.success(`Placed AI calls to ${res.data.called} lead${res.data.called === 1 ? "" : "s"}`);
+      } else if (mode === "email") {
+        if (!emailSubject.trim() || !emailBody.trim()) { toast.error("Subject and body required"); setSending(false); return; }
+        const res = await api.post("/bulk/email", { stages, subject: emailSubject, body: emailBody });
+        toast.success(`Emailed ${res.data.sent} lead${res.data.sent === 1 ? "" : "s"}${res.data.skipped ? `, ${res.data.skipped} skipped (no email)` : ""}${res.data.failed ? `, ${res.data.failed} failed` : ""}`);
+        if (res.data.failed && res.data.error) toast.error(res.data.error, { duration: 8000 });
+      } else if (mode === "sms") {
+        if (!smsMessage.trim()) { toast.error("Message required"); setSending(false); return; }
+        const res = await api.post("/bulk/sms", { stages, message: smsMessage });
+        toast.success(`SMS sent to ${res.data.sent} lead${res.data.sent === 1 ? "" : "s"}${res.data.skipped ? `, ${res.data.skipped} skipped (no phone)` : ""}${res.data.failed ? `, ${res.data.failed} failed` : ""}`);
+        if (res.data.failed && res.data.error) toast.error(res.data.error, { duration: 8000 });
       }
       onDone?.();
       setOpen(false);
@@ -103,12 +118,18 @@ export default function BulkOutreachDialog({ onDone }) {
         </DialogHeader>
 
         <Tabs value={mode} onValueChange={setMode} className="w-full">
-          <TabsList className="grid grid-cols-2 w-full">
+          <TabsList className="grid grid-cols-4 w-full">
             <TabsTrigger value="whatsapp" data-testid="bulk-tab-whatsapp">
-              <MessageCircle className="w-4 h-4 mr-1.5" /> WhatsApp
+              <MessageCircle className="w-4 h-4 mr-1" /> WhatsApp
             </TabsTrigger>
             <TabsTrigger value="call" data-testid="bulk-tab-call">
-              <PhoneCall className="w-4 h-4 mr-1.5" /> AI Call
+              <PhoneCall className="w-4 h-4 mr-1" /> AI Call
+            </TabsTrigger>
+            <TabsTrigger value="email" data-testid="bulk-tab-email">
+              <Mail className="w-4 h-4 mr-1" /> Email
+            </TabsTrigger>
+            <TabsTrigger value="sms" data-testid="bulk-tab-sms">
+              <MessageSquare className="w-4 h-4 mr-1" /> SMS
             </TabsTrigger>
           </TabsList>
 
@@ -180,9 +201,23 @@ export default function BulkOutreachDialog({ onDone }) {
               </Select>
             </TabsContent>
 
+            <TabsContent value="email" className="m-0 space-y-2">
+              <label className="text-sm font-medium text-zinc-700">Subject</label>
+              <Input value={emailSubject} onChange={(e) => setEmailSubject(e.target.value)} placeholder="e.g. {name}, GATE 2027 admissions are open" data-testid="bulk-email-subject" />
+              <label className="text-sm font-medium text-zinc-700">Body</label>
+              <Textarea rows={5} value={emailBody} onChange={(e) => setEmailBody(e.target.value)} placeholder="Hi {name},&#10;&#10;Write your message here… use {name} and {course} as placeholders." data-testid="bulk-email-body" />
+              <p className="text-xs text-zinc-400">Only leads with an email address will be contacted. Placeholders: {"{name}"}, {"{course}"}.</p>
+            </TabsContent>
+
+            <TabsContent value="sms" className="m-0 space-y-2">
+              <label className="text-sm font-medium text-zinc-700">SMS message</label>
+              <Textarea rows={4} value={smsMessage} onChange={(e) => setSmsMessage(e.target.value)} placeholder="Hi {name}, ... use {name} and {course} as placeholders." data-testid="bulk-sms-message" />
+              <p className="text-xs text-zinc-400">Sent via Twilio to leads with a phone number. Placeholders: {"{name}"}, {"{course}"}. Standard SMS rates apply.</p>
+            </TabsContent>
+
             <div className="rounded-md bg-blue-50 border border-blue-100 p-3 text-sm text-blue-800" data-testid="bulk-count-preview">
               {target > 0
-                ? <>This will {mode === "whatsapp" ? "message" : "call"} <span className="font-semibold">{target}</span> lead{target === 1 ? "" : "s"} across <span className="font-semibold">{stages.length}</span> stage group{stages.length === 1 ? "" : "s"}.</>
+                ? <>This will {mode === "call" ? "call" : mode === "email" ? "email" : "message"} up to <span className="font-semibold">{target}</span> lead{target === 1 ? "" : "s"} across <span className="font-semibold">{stages.length}</span> stage group{stages.length === 1 ? "" : "s"}.</>
                 : <>No leads in the selected stage group{stages.length === 1 ? "" : "s"}.</>}
             </div>
           </div>
@@ -192,11 +227,11 @@ export default function BulkOutreachDialog({ onDone }) {
           <Button variant="outline" onClick={() => setOpen(false)} data-testid="cancel-bulk-outreach-btn">Cancel</Button>
           <Button
             onClick={submit}
-            disabled={sending || target === 0 || (mode === "whatsapp" && waMode === "quick" && !templateId) || (mode === "whatsapp" && waMode === "meta" && !metaName)}
+            disabled={sending || target === 0 || (mode === "whatsapp" && waMode === "quick" && !templateId) || (mode === "whatsapp" && waMode === "meta" && !metaName) || (mode === "email" && (!emailSubject.trim() || !emailBody.trim())) || (mode === "sms" && !smsMessage.trim())}
             className="bg-blue-600 hover:bg-blue-700"
             data-testid="submit-bulk-outreach-btn"
           >
-            {sending ? "Sending…" : mode === "whatsapp" ? `Send to ${target}` : `Call ${target}`}
+            {sending ? "Sending…" : mode === "call" ? `Call ${target}` : mode === "email" ? `Email ${target}` : mode === "sms" ? `Text ${target}` : `Send to ${target}`}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -48,6 +48,14 @@
   - Lead AI Caller has an agent selector + SCRIPTED/AI-AGENT mode badge; assigned agent drives the call transcript, outcome and interest score.
   - Stack: Emergent Universal LLM key (openai gpt-4.1-mini), TF-IDF retrieval in Mongo.
 
+## Bulk Outreach — Multi-channel (Jun 2026)
+Bulk Outreach dialog supports 4 channels across selectable pipeline stage groups, all with `{name}`/`{course}` templates:
+- **WhatsApp** (quick + Meta approved templates) — `POST /api/bulk/whatsapp`
+- **AI Call** (live voice, EN/HI) — `POST /api/bulk/calls`
+- **Email** (Resend) — `POST /api/bulk/email` — returns sent/failed/skipped + surfaces provider error
+- **SMS** (Twilio) — `POST /api/bulk/sms` — E.164 normalized via configurable default country code
+NOTE: Email failures now show the real Resend reason (fixed 502→400 so Cloudflare no longer masks it). Resend needs a **verified domain** to email non-owner addresses (sandbox-limited to account owner). Twilio trial only reaches verified numbers.
+
 ## Backlog (prioritized)
 - **P1 — AI Agent Studio Phase 2:** DONE (Jun 2026). Q&A training, knowledge gaps/unknowns, prompt versioning/rollback, per-agent analytics, self-learning loop, QA review — 79 tests pass (iteration_7.json).
 - **P1 — Voice provider credentials (Twilio / ElevenLabs / OpenAI):** DONE (Jun 2026). Added `twilio`, `elevenlabs`, `openai` providers to Integration Settings (`integrations_admin.py`) — DB-backed, Fernet-encrypted, masked, with live connection testers (Twilio Accounts API, ElevenLabs /v1/user, OpenAI /v1/models). Fields: Twilio (account_sid, auth_token, api_key, api_secret, phone_number), ElevenLabs (api_key, voice_id), OpenAI (api_key). Frontend renders new cards dynamically. Managed from Settings → Integrations, never .env.
