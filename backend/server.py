@@ -1232,6 +1232,13 @@ async def on_startup():
     except Exception as e:
         logger.error(f"Scheduler start failed: {e}")
 
+    try:
+        if hasattr(email_router, "start_worker"):
+            email_router.start_worker()
+            logger.info("Email sending worker started")
+    except Exception as e:
+        logger.error(f"Email worker start failed: {e}")
+
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@leadflow.com").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
     existing = await db.users.find_one({"email": admin_email})
@@ -1274,6 +1281,10 @@ app.include_router(build_agents_router(db, get_current_user))
 
 from voice_calls import build_voice_router
 app.include_router(build_voice_router(db, get_current_user, _add_activity))
+
+from email_campaigns import build_email_router
+email_router = build_email_router(db, get_current_user, _add_activity, get_creds)
+app.include_router(email_router)
 
 app.add_middleware(
     CORSMiddleware,

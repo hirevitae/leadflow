@@ -11,6 +11,7 @@ import Pipeline from "@/pages/Pipeline";
 import Analytics from "@/pages/Analytics";
 import Inbox from "@/pages/Inbox";
 import ContentStudio from "@/pages/ContentStudio";
+import EmailStudio from "@/pages/EmailStudio";
 import Followups from "@/pages/Followups";
 import Team from "@/pages/Team";
 import Settings from "@/pages/Settings";
@@ -44,6 +45,7 @@ function App() {
           <Route path="/analytics" element={<ProtectedRoute><Layout><Analytics /></Layout></ProtectedRoute>} />
           <Route path="/inbox" element={<ProtectedRoute><Layout><Inbox /></Layout></ProtectedRoute>} />
           <Route path="/content" element={<ProtectedRoute><Layout><ContentStudio /></Layout></ProtectedRoute>} />
+          <Route path="/email" element={<ProtectedRoute><Layout><EmailStudio /></Layout></ProtectedRoute>} />
           <Route path="/followups" element={<ProtectedRoute><Layout><Followups /></Layout></ProtectedRoute>} />
           <Route path="/ai-studio" element={<ProtectedRoute><Layout><AgentStudio /></Layout></ProtectedRoute>} />
           <Route path="/ai-studio/:id" element={<ProtectedRoute><Layout><AgentDetail /></Layout></ProtectedRoute>} />
