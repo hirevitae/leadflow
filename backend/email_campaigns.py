@@ -390,6 +390,11 @@ def build_email_router(db, get_current_user, add_activity, get_creds):
             await db.email_queue.update_one({"id": item["id"]}, {"$set": {"status": "failed", "error": "lead gone"}})
             await db.email_campaigns.update_one({"id": campaign["id"]}, {"$inc": {"stats.failed": 1, "stats.queued": -1}})
             return
+        # Compliance: skip if the recipient unsubscribed / was suppressed after the campaign was built.
+        if await db.email_suppression.find_one({"email": item["to"]}):
+            await db.email_queue.update_one({"id": item["id"]}, {"$set": {"status": "skipped", "error": "suppressed"}})
+            await db.email_campaigns.update_one({"id": campaign["id"]}, {"$inc": {"stats.queued": -1}})
+            return
         subject = _render(campaign["subject"], lead, base, campaign["id"])
         html = _render(campaign["html"], lead, base, campaign["id"])
         try:

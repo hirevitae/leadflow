@@ -48,6 +48,19 @@
   - Lead AI Caller has an agent selector + SCRIPTED/AI-AGENT mode badge; assigned agent drives the call transcript, outcome and interest score.
   - Stack: Emergent Universal LLM key (openai gpt-4.1-mini), TF-IDF retrieval in Mongo.
 
+## Email Outreach Module — Phase A (Jul 2026) — DONE
+Full email-marketing module native to FastAPI/React/Mongo (`email_campaigns.py`, `EmailStudio.jsx` + dialogs). Nav: **Email Outreach** → `/email`. 17/17 backend tests + full UI verified (iteration_9.json).
+- **Templates:** CRUD + duplicate, 13 categories, CRM merge fields ({{name}},{{course}},{{email}},{{phone}},{{stage}},{{unsubscribe}}), HTML import/export, live desktop/mobile/dark preview.
+- **Campaigns:** template-driven, audience = pipeline stages (deduped + suppression-filtered), Send now / Schedule later (timezone), throttle (emails/min + business-hours-only).
+- **Sending engine:** Mongo `email_queue` + async background worker (5s tick, throttle, 3-retry), pause/resume/cancel, real-time progress via polling. Suppression re-checked at send time (compliance).
+- **Tracking:** Resend webhook (`/api/email/webhook/resend`) → delivered/opened/clicked/bounced/complained → campaign stats + lead activity timeline. One-click unsubscribe + suppression list; bounces/complaints auto-suppress.
+- **Analytics:** delivery/open/click/bounce rates + clicks-over-time chart per campaign.
+NOTE: Real delivery + tracking events require a **verified Resend domain** (currently sandbox — sends to non-owner emails fail by design).
+
+### Email Outreach — Phase B/C backlog (P1/P2)
+- **P1:** GrapesJS drag-and-drop visual builder; template version history; A/B testing (subject/template split + winner); recurring campaigns (daily/weekly/monthly/custom).
+- **P2:** automation triggers (lead created, missed call, AI-call completed, payment pending, birthday, custom); advanced analytics (device/country/browser breakdown, heatmap); favorite/share templates.
+
 ## Bulk Outreach — Multi-channel (Jun 2026)
 Bulk Outreach dialog supports 4 channels across selectable pipeline stage groups, all with `{name}`/`{course}` templates:
 - **WhatsApp** (quick + Meta approved templates) — `POST /api/bulk/whatsapp`
