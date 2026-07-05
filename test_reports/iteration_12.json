@@ -1,0 +1,27 @@
+{
+  "summary": "Verified integration connection-tester bug-fix. 6/6 pytest cases pass in /app/backend/tests/test_integration_testers.py. POST /api/admin/integrations/test {provider:'facebook'} → 200 {ok:false, status:'invalid', detail:\"Page 'Vani Institute Bangalore' is reachable, but the token is MISSING the 'pages_manage_posts' permission ... Re-generate a Page access token with pages_manage_posts + pages_read_engagement granted.\"}. POST .../test {provider:'instagram'} → 200 {ok:false, status:'invalid', detail:\"ID '101793322659579' is NOT an Instagram Business account (no username returned — it looks like a Facebook Page ID). Get the correct IG id via /{PAGE_ID}?fields=instagram_business_account, and grant instagram_basic + instagram_content_publish.\"}. GET /api/admin/integrations lists all 8 providers (whatsapp, facebook, instagram, email, ai, twilio, elevenlabs, openai) and after the tests ran facebook.status='invalid' and instagram.status='invalid' — neither is 'connected'. Regression: whatsapp & email test endpoints return 200 or 400 (never 500) and the response shape includes ok/status/detail/response_time_ms.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_integration_testers.py",
+    "/app/test_reports/pytest/integration_testers.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "integrations_admin._test_facebook now correctly does a second call to /me/permissions and gates success on 'pages_manage_posts' — good, this catches the exact User-token-without-publish-scope case.",
+    "_test_instagram now asserts presence of 'username' in the /{ig_id}?fields=username response, and returns an actionable guidance string when absent (Page ID vs IG business id). Good.",
+    "Note (seed-data hazard, not a code bug): the Instagram provider requires BOTH ig_business_account_id AND fb_page_access_token in the DB. In this test env the fb_page_access_token was missing under provider='instagram' (only present under provider='facebook'), so the /test endpoint returned 400 'Not configured' until I upserted the same encrypted token under provider='instagram'. Consider auto-sharing/inheriting the Facebook page token for Instagram in get_value() (since ENV_MAP already maps both keys to FB_PAGE_ACCESS_TOKEN) — otherwise every user has to paste the same token twice."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_integration_testers.py (new)",
+    "/app/test_reports/pytest/integration_testers.xml (new)",
+    "/app/test_reports/iteration_12.json (new)"
+  ],
+  "success_rate": {"backend": "100% (6/6)", "frontend": "n/a (skipped per request)"},
+  "test_credentials": "admin@leadflow.com / admin123",
+  "seed_data_creation": "Upserted integration_settings docs: {provider:'instagram', setting_key:'fb_page_access_token'} (reused the exact encrypted setting_value from provider='facebook' so it decrypts with the same JWT_SECRET-derived Fernet key) and {provider:'instagram', setting_key:'ig_business_account_id', setting_value:'101793322659579'}. This mirrors the state described in the review request ('user's real Meta creds saved').",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: pytest /app/backend/tests/test_integration_testers.py -v (real Meta Graph calls happen for facebook & instagram; each test ~250–500ms). If instagram tests start failing with 400 'Not configured', re-seed the two instagram integration_settings docs (see seed_data_creation above). Facebook and Instagram will remain status='invalid' until the user rotates their Meta creds — this is the correct/expected behavior.",
+  "rca_of_the_issue": "Before the fix, _test_facebook only checked if the Page ID resolved (200 from /{page_id}) and _test_instagram only checked HTTP 200 from /{ig_id} — Meta returns 200 for a User token that can read the Page and returns 200 with just {id} for a Page ID queried as if it were an IG account. Both testers therefore returned True/'Connected' even though publishing would fail (as it did in production: '#200 no permission to post', '#100 IG object does not exist'). Fix (verified): (a) _test_facebook now additionally GETs /me/permissions and requires 'pages_manage_posts' in the granted set; (b) _test_instagram now requires 'username' in the /{ig_id}?fields=username response and otherwise returns actionable guidance that the id looks like a Page ID and the missing scopes are instagram_basic + instagram_content_publish. Both status flips to 'invalid' propagate to integration_meta.status and are visible in GET /api/admin/integrations."
+}

@@ -278,9 +278,17 @@ async def _test_facebook(c):
     async with httpx.AsyncClient(timeout=15) as cli:
         r = await cli.get(f"https://graph.facebook.com/{GRAPH_DEFAULT_VERSION}/{pid}",
                           params={"fields": "name,id", "access_token": tok})
-    if r.status_code == 200:
-        return True, f"Page: {r.json().get('name', pid)}"
-    return False, r.text[:300]
+        if r.status_code != 200:
+            return False, r.json().get("error", {}).get("message", r.text[:300])
+        name = r.json().get("name", pid)
+        perm = await cli.get(f"https://graph.facebook.com/{GRAPH_DEFAULT_VERSION}/me/permissions",
+                             params={"access_token": tok})
+    granted = {p["permission"] for p in perm.json().get("data", []) if p.get("status") == "granted"} if perm.status_code == 200 else set()
+    if "pages_manage_posts" not in granted:
+        return False, (f"Page '{name}' is reachable, but the token is MISSING the 'pages_manage_posts' "
+                       "permission required to publish posts. Re-generate a Page access token with "
+                       "pages_manage_posts + pages_read_engagement granted.")
+    return True, f"Page: {name} · publishing enabled"
 
 
 async def _test_instagram(c):
@@ -288,9 +296,15 @@ async def _test_instagram(c):
     async with httpx.AsyncClient(timeout=15) as cli:
         r = await cli.get(f"https://graph.facebook.com/{GRAPH_DEFAULT_VERSION}/{igb}",
                           params={"fields": "username", "access_token": tok})
-    if r.status_code == 200:
-        return True, f"IG: @{r.json().get('username', igb)}"
-    return False, r.text[:300]
+    if r.status_code != 200:
+        return False, r.json().get("error", {}).get("message", r.text[:300])
+    data = r.json()
+    if not data.get("username"):
+        return False, (f"ID '{igb}' is NOT an Instagram Business account (no username returned — it looks "
+                       "like a Facebook Page ID). Get the correct IG id via "
+                       "/{PAGE_ID}?fields=instagram_business_account, and grant instagram_basic + "
+                       "instagram_content_publish.")
+    return True, f"IG: @{data.get('username')}"
 
 
 async def _test_email(c):
