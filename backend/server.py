@@ -1273,7 +1273,7 @@ from meta_integrations import build_meta_router
 app.include_router(build_meta_router(db, get_current_user, _add_activity))
 
 from social_posts import build_social_router
-social_router = build_social_router(db, get_current_user)
+social_router = build_social_router(db, get_current_user, get_creds)
 app.include_router(social_router)
 
 app.include_router(build_integrations_router(db, get_current_user, require_admin))

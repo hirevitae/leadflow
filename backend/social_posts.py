@@ -3,7 +3,8 @@ import os, uuid, asyncio, base64, httpx, logging
 from datetime import datetime, timezone
 from xml.etree import ElementTree as ET
 from urllib.parse import quote
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ class GenerateIn(BaseModel):
     auto_publish: bool = False
 
 
-def build_social_router(db, get_current_user):
+def build_social_router(db, get_current_user, get_creds):
     router = APIRouter(prefix="/api/social", tags=["social"])
 
     async def _content_cfg() -> dict:
@@ -112,16 +113,26 @@ def build_social_router(db, get_current_user):
         d = {**doc}; d.pop("_id", None)
         return d
 
-    async def _do_publish(p: dict, targets: set) -> dict:
+    async def _public_base_url() -> str:
+        cfg = await db.app_config.find_one({"key": "public_base_url"})
+        return (cfg or {}).get("value", "")
+
+    async def _do_publish(p: dict, targets: set, base: str = "", user: dict = None) -> dict:
         results = {}
-        page_id = os.environ.get("FB_PAGE_ID"); tok = os.environ.get("FB_PAGE_ACCESS_TOKEN")
-        ig = os.environ.get("IG_BUSINESS_ACCOUNT_ID")
+        fb = await get_creds(db, "facebook")
+        igc = await get_creds(db, "instagram")
+        page_id = fb.get("page_id"); tok = fb.get("page_access_token")
+        ig_id = igc.get("ig_business_account_id"); ig_tok = igc.get("fb_page_access_token") or tok
+        if not base:
+            base = await _public_base_url()
+        image_url = f"{base}/api/social/image/{p['id']}" if (base and p.get("image_b64")) else None
+
         if "facebook" in targets:
             if not (page_id and tok):
                 results["facebook"] = "not_configured"
             else:
                 try:
-                    async with httpx.AsyncClient(timeout=20) as c:
+                    async with httpx.AsyncClient(timeout=25) as c:
                         if p.get("image_b64"):
                             files = {"source": ("banner.png", base64.b64decode(p["image_b64"]), "image/png")}
                             data = {"caption": p["caption"], "access_token": tok}
@@ -130,17 +141,37 @@ def build_social_router(db, get_current_user):
                             r = await c.post(f"{GRAPH}/{page_id}/feed",
                                              params={"message": p["caption"], "access_token": tok})
                         r.raise_for_status()
-                        results["facebook"] = r.json()
+                        results["facebook"] = {"status": "published", **r.json()}
                 except Exception as e:
-                    results["facebook"] = f"error: {e}"
+                    results["facebook"] = f"error: {getattr(e, 'response', None) and e.response.text or e}"
+
         if "instagram" in targets:
-            if not (ig and tok and p.get("image_b64")):
-                results["instagram"] = "needs_image_and_keys"
+            if not (ig_id and ig_tok):
+                results["instagram"] = "not_configured"
+            elif not image_url:
+                results["instagram"] = "needs_image"  # IG requires a public image; generate a banner first
             else:
-                results["instagram"] = "IG requires public image URL - upload banner to your CDN then call /messages. Skipped for now."
+                try:
+                    async with httpx.AsyncClient(timeout=40) as c:
+                        cr = await c.post(f"{GRAPH}/{ig_id}/media",
+                                          params={"image_url": image_url, "caption": p["caption"], "access_token": ig_tok})
+                        cr.raise_for_status()
+                        creation_id = cr.json().get("id")
+                        pub = await c.post(f"{GRAPH}/{ig_id}/media_publish",
+                                           params={"creation_id": creation_id, "access_token": ig_tok})
+                        pub.raise_for_status()
+                        results["instagram"] = {"status": "published", **pub.json()}
+                except Exception as e:
+                    results["instagram"] = f"error: {getattr(e, 'response', None) and e.response.text or e}"
+
+        now = datetime.now(timezone.utc).isoformat()
         await db.social_posts.update_one({"id": p["id"]},
-            {"$set": {"status": "published", "publish_result": results,
-                      "published_at": datetime.now(timezone.utc).isoformat()}})
+            {"$set": {"status": "published", "publish_result": results, "published_at": now}})
+        await db.social_publish_history.insert_one({
+            "id": str(uuid.uuid4()), "post_id": p["id"], "topic": p.get("topic"),
+            "caption": (p.get("caption") or "")[:200], "targets": list(targets),
+            "results": results, "published_by": (user or {}).get("name", "system"),
+            "published_at": now})
         return results
 
     @router.post("/generate")
@@ -180,12 +211,32 @@ def build_social_router(db, get_current_user):
         return {"ok": True}
 
     @router.post("/posts/{post_id}/publish")
-    async def publish(post_id: str, payload: dict, user=Depends(get_current_user)):
+    async def publish(post_id: str, payload: dict, request: Request, user=Depends(get_current_user)):
         targets = set(payload.get("targets", ["facebook", "instagram"]))
         p = await db.social_posts.find_one({"id": post_id})
         if not p: raise HTTPException(404, "Not found")
-        results = await _do_publish(p, targets)
+        proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+        base = f"{proto}://{host}"
+        await db.app_config.update_one({"key": "public_base_url"},
+                                       {"$set": {"key": "public_base_url", "value": base}}, upsert=True)
+        results = await _do_publish(p, targets, base=base, user=user)
         return {"ok": True, "results": results}
+
+    @router.get("/image/{post_id}")
+    async def post_image(post_id: str):
+        p = await db.social_posts.find_one({"id": post_id})
+        if not p or not p.get("image_b64"):
+            raise HTTPException(404, "No image")
+        data = base64.b64decode(p["image_b64"])
+        mime = "image/jpeg" if p["image_b64"].startswith("/9j/") else "image/png"
+        return Response(content=data, media_type=mime)
+
+    @router.get("/history")
+    async def publish_history(user=Depends(get_current_user)):
+        docs = await db.social_publish_history.find({}).sort("published_at", -1).to_list(200)
+        for d in docs: d.pop("_id", None)
+        return docs
 
     @router.get("/topics")
     async def topics(user=Depends(get_current_user)):

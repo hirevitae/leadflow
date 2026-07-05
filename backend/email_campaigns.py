@@ -106,6 +106,18 @@ class TestSendIn(BaseModel):
     html: str
 
 
+TRIGGERS = ["lead_created", "stage_changed", "ai_call_completed", "email_opened",
+            "whatsapp_sent", "payment_pending", "birthday"]
+
+
+class AutomationIn(BaseModel):
+    name: str
+    trigger: str
+    template_id: str
+    stage: Optional[str] = None      # optional filter for stage_changed
+    enabled: bool = True
+
+
 def _now():
     return datetime.now(timezone.utc)
 
@@ -425,7 +437,23 @@ def build_email_router(db, get_current_user, add_activity, get_creds):
             hr = (e.get("created_at") or "")[:13]
             buckets[hr] = buckets.get(hr, 0) + 1
         clicks_over_time = [{"t": k, "n": v} for k, v in sorted(buckets.items())]
-        return {"stats": s, "rates": rates, "clicks_over_time": clicks_over_time}
+
+        # Advanced analytics: device/browser breakdown + opens heatmap (weekday × hour)
+        opens = await db.email_events.find({"campaign_id": cid, "type": {"$in": ["opened", "clicked"]}}).to_list(10000)
+        device_breakdown, browser_breakdown = {}, {}
+        heatmap = [[0] * 24 for _ in range(7)]
+        for e in opens:
+            dev = e.get("device") or "Unknown"
+            device_breakdown[dev] = device_breakdown.get(dev, 0) + 1
+            browser_breakdown[_browser_from_ua(e.get("user_agent", ""))] = browser_breakdown.get(_browser_from_ua(e.get("user_agent", "")), 0) + 1
+            try:
+                dt = datetime.fromisoformat((e.get("created_at") or "").replace("Z", "+00:00"))
+                heatmap[dt.weekday()][dt.hour] += 1
+            except Exception:
+                pass
+        return {"stats": s, "rates": rates, "clicks_over_time": clicks_over_time,
+                "device_breakdown": device_breakdown, "browser_breakdown": browser_breakdown,
+                "heatmap": heatmap}
 
     @router.post("/campaigns/test")
     async def test_send(payload: TestSendIn, user=Depends(get_current_user)):
@@ -508,6 +536,79 @@ def build_email_router(db, get_current_user, add_activity, get_creds):
             await add_activity(lid, f"email_{etype}", labels.get(etype, etype), SYS)
         except Exception:
             pass
+
+    # ---------------- Automations (Phase C) ----------------
+    @router.get("/triggers")
+    async def triggers(user=Depends(get_current_user)):
+        return TRIGGERS
+
+    @router.get("/automations")
+    async def list_automations(user=Depends(get_current_user)):
+        docs = await db.email_automations.find({}).sort("created_at", -1).to_list(500)
+        for d in docs:
+            d.pop("_id", None)
+        return docs
+
+    @router.post("/automations")
+    async def create_automation(payload: AutomationIn, user=Depends(get_current_user)):
+        if payload.trigger not in TRIGGERS:
+            raise HTTPException(400, "Unknown trigger")
+        now = _now().isoformat()
+        doc = {"id": str(uuid.uuid4()), **payload.model_dump(), "runs": 0,
+               "created_by": user["name"], "created_at": now}
+        await db.email_automations.insert_one(dict(doc))
+        doc.pop("_id", None)
+        return doc
+
+    @router.put("/automations/{aid}")
+    async def update_automation(aid: str, payload: AutomationIn, user=Depends(get_current_user)):
+        d = await db.email_automations.find_one_and_update({"id": aid},
+            {"$set": payload.model_dump()}, return_document=True)
+        if not d:
+            raise HTTPException(404, "Automation not found")
+        d.pop("_id", None)
+        return d
+
+    @router.delete("/automations/{aid}")
+    async def delete_automation(aid: str, user=Depends(get_current_user)):
+        await db.email_automations.delete_one({"id": aid})
+        return {"ok": True}
+
+    async def fire_automations(trigger: str, lead: dict):
+        """Called on CRM events — sends matching automation template emails to the lead."""
+        try:
+            if not lead or not lead.get("email"):
+                return
+            if await db.email_suppression.find_one({"email": lead["email"]}):
+                return
+            rules = await db.email_automations.find({"trigger": trigger, "enabled": True}).to_list(100)
+            if not rules:
+                return
+            creds = await get_creds(db, "email")
+            if not creds.get("api_key"):
+                return
+            resend.api_key = creds["api_key"]
+            sender = creds.get("sender_email") or "onboarding@resend.dev"
+            base = await _stored_base(db)
+            for rule in rules:
+                if rule.get("stage") and lead.get("stage") != rule["stage"]:
+                    continue
+                tpl = await db.email_templates.find_one({"id": rule["template_id"]})
+                if not tpl:
+                    continue
+                subject = _render(tpl["subject"], lead, base, f"auto-{rule['id']}")
+                html = _render(tpl["html"], lead, base, f"auto-{rule['id']}")
+                try:
+                    await asyncio.to_thread(resend.Emails.send,
+                        {"from": sender, "to": [lead["email"]], "subject": subject, "html": html})
+                    await db.email_automations.update_one({"id": rule["id"]}, {"$inc": {"runs": 1}})
+                    await add_activity(lead["id"], "email_sent", f"Automation '{rule['name']}' ({trigger})", SYS)
+                except Exception as e:
+                    logger.error(f"Automation send failed ({rule['id']}): {e}")
+        except Exception as e:
+            logger.error(f"fire_automations error: {e}")
+
+    router.fire = fire_automations
 
     # ---------------- Background sending worker ----------------
     def _in_business_hours(tz_name: str) -> bool:
@@ -697,6 +798,23 @@ def _device_from_ua(ua: str) -> str:
     if u:
         return "Desktop"
     return "Unknown"
+
+
+def _browser_from_ua(ua: str) -> str:
+    u = (ua or "").lower()
+    if "edg" in u:
+        return "Edge"
+    if "chrome" in u or "crios" in u:
+        return "Chrome"
+    if "firefox" in u:
+        return "Firefox"
+    if "safari" in u:
+        return "Safari"
+    if "outlook" in u:
+        return "Outlook"
+    if "gmail" in u or "googleimageproxy" in u:
+        return "Gmail"
+    return "Other" if u else "Unknown"
 
 
 async def _stored_base(db) -> str:
