@@ -61,6 +61,9 @@ NOTE: Real delivery + tracking events require a **verified Resend domain** (curr
 - **P1:** GrapesJS drag-and-drop visual builder; template version history; A/B testing (subject/template split + winner); recurring campaigns (daily/weekly/monthly/custom).
 - **P2:** automation triggers (lead created, missed call, AI-call completed, payment pending, birthday, custom); advanced analytics (device/country/browser breakdown, heatmap); favorite/share templates.
 
+## Content Studio publish fix (Jul 2026)
+- FB/IG publish now reads creds from DB Integration Settings (was reading .env). Instagram publishes via public image URL `GET /api/social/image/{post_id}` + 2-step Graph media/media_publish. Publish history in `social_publish_history` + `GET /api/social/history` + Content Studio "Publish History" tab. Verified 6/6 backend + UI (iteration_11.json). Meta permission/ID errors are surfaced cleanly (user-side setup: FB needs pages_manage_posts; IG needs correct ig_business_account_id + instagram_content_publish).
+
 ## Bulk Outreach — Multi-channel (Jun 2026)
 Bulk Outreach dialog supports 4 channels across selectable pipeline stage groups, all with `{name}`/`{course}` templates:
 - **WhatsApp** (quick + Meta approved templates) — `POST /api/bulk/whatsapp`
