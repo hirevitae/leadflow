@@ -117,6 +117,15 @@ def build_social_router(db, get_current_user, get_creds):
         cfg = await db.app_config.find_one({"key": "public_base_url"})
         return (cfg or {}).get("value", "")
 
+    def _meta_err(e):
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            try:
+                return resp.json().get("error", {}).get("message") or resp.text[:200]
+            except Exception:
+                return resp.text[:200]
+        return str(e)[:200]
+
     async def _do_publish(p: dict, targets: set, base: str = "", user: dict = None) -> dict:
         results = {}
         fb = await get_creds(db, "facebook")
@@ -143,7 +152,7 @@ def build_social_router(db, get_current_user, get_creds):
                         r.raise_for_status()
                         results["facebook"] = {"status": "published", **r.json()}
                 except Exception as e:
-                    results["facebook"] = f"error: {getattr(e, 'response', None) and e.response.text or e}"
+                    results["facebook"] = f"error: {_meta_err(e)}"
 
         if "instagram" in targets:
             if not (ig_id and ig_tok):
@@ -162,7 +171,7 @@ def build_social_router(db, get_current_user, get_creds):
                         pub.raise_for_status()
                         results["instagram"] = {"status": "published", **pub.json()}
                 except Exception as e:
-                    results["instagram"] = f"error: {getattr(e, 'response', None) and e.response.text or e}"
+                    results["instagram"] = f"error: {_meta_err(e)}"
 
         now = datetime.now(timezone.utc).isoformat()
         await db.social_posts.update_one({"id": p["id"]},

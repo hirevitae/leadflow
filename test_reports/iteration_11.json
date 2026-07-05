@@ -1,0 +1,37 @@
+{
+  "summary": "Verified social publish bug-fix end-to-end. Backend: 6/6 pytest cases pass in test_social_publish.py — (1) facebook & (2) instagram providers show status=connected via /api/admin/integrations (DB creds present), (3) public GET /api/social/image/{post_id} returns image/jpeg 200 with 626KB payload for the seeded post b0521a2c-9f7a-4dd9-b47a-425ec8c7aa80, (4) same endpoint returns 404 on a bad id, (5) GET /api/social/history returns an entry containing every required field (post_id, topic, caption, targets, results, published_by, published_at), (6) results NO LONGER contain the old placeholder strings 'not_configured' (facebook) or 'needs_image_and_keys' (instagram) — they now contain real Meta error strings prefixed 'error:' proving the code path reached the Graph API using DB creds. Frontend: /content page loads, tab-drafts + tab-history testids both present, Publish History tab renders publish-history-list with a card that shows per-platform error badges (red, styled) plus timestamp + admin + topic + caption preview; Drafts tab shows 51 pending posts each with a publish-{id} button. Did NOT trigger another live publish (main agent already did 1); relied on the existing history entry per the 'at most ONE live publish' constraint. Meta errors observed are permission/token issues on the user's real FB Page/IG account ('(#200) Subject does not have permission to post photos on this page' and '(#100/33) Object with ID 101793322659579 does not exist') — these are EXPECTED per the review request and confirm the fix is working (real Meta call, real Meta response, logged to history).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Content Studio → Publish History", "issues": ["Raw Meta JSON error payload is shown inside the per-platform badge (e.g. full '{\"error\":{...\"fbtrace_id\":...}}' string). Functional but noisy — consider extracting only error.message for display and keeping raw JSON behind a details/expand toggle."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_social_publish.py",
+    "/app/test_reports/pytest/social_publish.xml"
+  ],
+  "action_items": [
+    "None from a code-correctness standpoint. USER-SIDE: the FB Page Access Token lacks pages_manage_posts / IG Content Publishing scope, and the configured IG Business Account ID 101793322659579 is not visible to the token — user must regrant permissions / verify the IG account is linked to the FB Page before a real post will land. This is out of scope for the app code.",
+    "OPTIONAL UX: prettify per-platform error rendering in ContentStudio.jsx history list (show error.message, hide raw JSON behind an expander)."
+  ],
+  "critical_code_review_comments": [
+    "social_posts.py _do_publish correctly reads creds from get_creds(db,'facebook'|'instagram') — no more os.environ reads. Good.",
+    "public_base_url is upserted on every publish call from x-forwarded-proto/host — works behind the ingress; safe.",
+    "IG flow: creates media container then media_publish; no explicit polling of status_code=FINISHED before publish. For larger/slower images Meta may return 'media not ready'. Not observed in this test but worth adding a short poll on /{creation_id}?fields=status_code if you see intermittent IG failures later.",
+    "History entry stores caption truncated to 200 chars — reasonable; no PII concerns."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_social_publish.py (new — 6 tests)",
+    "/app/test_reports/pytest/social_publish.xml (new)",
+    "/app/test_reports/iteration_11.json (new)"
+  ],
+  "success_rate": {"backend": "100% (6/6)", "frontend": "100% (tabs, history list with per-platform badges, drafts with publish buttons all render)"},
+  "test_credentials": "admin@leadflow.com / admin123",
+  "seed_data_creation": "None created; relied on existing seeded post b0521a2c-9f7a-4dd9-b47a-425ec8c7aa80 and the history entry from the main agent's single live publish.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: REACT_APP_BACKEND_URL=<url> pytest backend/tests/test_social_publish.py -v (~2s, no live Meta calls). To re-verify against a fresh publish, POST /api/social/posts/{id}/publish {targets:[facebook,instagram]} — but the request budget is 'at most ONE live publish per test session' to avoid spamming the user's real Page. History endpoint is the safe way to inspect prior results. FB/IG errors seen are user-account permission issues, NOT code bugs.",
+  "rca_of_the_issue": "Original bug: _do_publish previously read Meta credentials from os.environ (which were empty in this env), so it short-circuited to 'not_configured' / 'needs_image_and_keys' before ever touching Meta. Fix (already applied by main agent): _do_publish now calls get_creds(db,'facebook') and get_creds(db,'instagram') which pull the DB-stored integration_settings. Also added a public /api/social/image/{post_id} endpoint so Instagram (which needs a fetchable image_url, not base64) can grab the banner, plus a social_publish_history collection to log every attempt. Verified: creds resolve → Graph API is called → real Meta response captured → history logged with all required fields → placeholder strings absent from responses. All bug-fix acceptance criteria met."
+}
